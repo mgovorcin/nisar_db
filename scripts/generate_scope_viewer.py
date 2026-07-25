@@ -70,8 +70,11 @@ import pandas as pd
 
 # Same standard science modes used by ``nisar_db.consistent_gslc`` /
 # ``nisar_db.modes``; kept local so the generator runs without importing the
-# package (the notebooks env may not have it installed).
-STANDARD_MODES = {"4005", "2005"}
+# package (the notebooks env may not have it installed). Ordered most preferred
+# first -- the order is the tie-break between science modes, so it must match
+# ``nisar_db.modes.MODE_PRIORITY``.
+MODE_PRIORITY = ("4005", "2005")
+STANDARD_MODES = frozenset(MODE_PRIORITY)
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 
@@ -204,35 +207,44 @@ def load_period_json(path: Path, *keys: str) -> dict[str, list]:
 def common_mode_coverage(group: pd.DataFrame) -> tuple[str, str]:
     """Return the ``(common_mode, common_coverage)`` for one frame's granules.
 
-    Priority, identical to :func:`nisar_db.consistent_gslc._common_mode_coverage`:
+    Priority, identical to :func:`nisar_db.consistent_gslc._common_mode_coverage`.
+    Each mode settles its own coverage by majority (``F`` when ``n_F >= n_P``),
+    then the modes compete on:
 
-    1. standard science modes (``4005``/``2005``) vote before others,
-    2. the most frequent mode wins (total F+P count),
-    3. on a mode-count tie, the mode with more full-frame (``F``) acquisitions
-       wins, and
-    4. within the winning mode, ``F`` beats ``P`` on a tie.
+    1. coverage — full-frame (``F``) beats partial (``P``),
+    2. mode — :data:`MODE_PRIORITY` (``4005`` then ``2005``), with non-standard
+       modes competing only when the frame has no standard acquisitions, and
+    3. the acquisition count of the selected ``(mode, coverage)`` combo.
     """
-    combos = group.groupby(["mode", "coverage"]).size().reset_index(name="n")
-    standard = combos[combos["mode"].isin(STANDARD_MODES)]
-    candidates = standard if not standard.empty else combos
-
-    per_mode = (
-        candidates.assign(n_F=lambda d: d["n"].where(d["coverage"] == "F", 0))
-        .groupby("mode")
-        .agg(total=("n", "sum"), n_F=("n_F", "sum"))
-        .reset_index()
+    counts = (
+        group.groupby(["mode", "coverage"])
+        .size()
+        .unstack(fill_value=0)
+        .reindex(columns=["F", "P"], fill_value=0)
     )
-    per_mode["rank"] = per_mode["mode"].apply(lambda m: 0 if m in STANDARD_MODES else 1)
-    per_mode = per_mode.sort_values(
-        ["total", "n_F", "rank"], ascending=[False, False, True]
-    )
-    winning_mode = per_mode.iloc[0]["mode"]
+    standard = counts[counts.index.isin(STANDARD_MODES)]
+    candidates = standard if not standard.empty else counts
 
-    mode_rows = combos[combos["mode"] == winning_mode].set_index("coverage")["n"]
-    n_f = int(mode_rows.get("F", 0))
-    n_p = int(mode_rows.get("P", 0))
-    winning_coverage = "F" if n_f >= n_p else "P"
-    return winning_mode, winning_coverage
+    ranked = pd.DataFrame(
+        {
+            "mode": candidates.index,
+            "coverage": (
+                candidates["F"].ge(candidates["P"]).map({True: "F", False: "P"})
+            ),
+            "n_selected": candidates[["F", "P"]].max(axis=1),
+        }
+    )
+    ranked["coverage_rank"] = (ranked["coverage"] == "P").astype(int)
+    ranked["mode_rank"] = [
+        MODE_PRIORITY.index(m) if m in MODE_PRIORITY else len(MODE_PRIORITY)
+        for m in ranked["mode"]
+    ]
+    winner = ranked.sort_values(
+        ["coverage_rank", "mode_rank", "n_selected"],
+        ascending=[True, True, False],
+        kind="stable",
+    ).iloc[0]
+    return str(winner["mode"]), str(winner["coverage"])
 
 
 def summarize_frame(group: pd.DataFrame) -> dict:
@@ -436,11 +448,11 @@ def render_html(frame_data: dict, meta: dict) -> str:
 
 APP_CSS = r"""
   :root{
-    --bg:#0f1418; --panel:#161c22; --panel2:#1d252c; --border:#2a333b;
-    --text:#e8edf2; --text-dim:#9aa7b2; --accent:#4da3ff; --accent2:#ff8a4d;
+    --bg:#000000; --panel:#303030; --panel2:#262626; --border:#4a4a4a;
+    --text:#f5f5f5; --text-dim:#9db4c6; --accent:#76aedf; --accent2:#aad3c1;
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);}
+  html,body{margin:0;height:100%;font-family:Metropolis,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);}
   #app{display:flex;height:100vh;width:100vw;overflow:hidden;}
   #sidebar{width:340px;min-width:340px;background:var(--panel);border-right:1px solid var(--border);
     display:flex;flex-direction:column;height:100%;overflow:hidden;}
@@ -458,7 +470,7 @@ APP_CSS = r"""
   .section.collapsed .chev{transform:rotate(-90deg);}
   label{display:block;margin:6px 0 3px 0;color:var(--text-dim);font-size:11px;}
   input[type=text], select{
-    width:100%;background:#0f1418;border:1px solid var(--border);color:var(--text);
+    width:100%;background:#1f1f1f;border:1px solid var(--border);color:var(--text);
     border-radius:5px;padding:5px 7px;font-size:12.5px;
   }
   .row{display:flex;gap:6px;}
@@ -467,57 +479,57 @@ APP_CSS = r"""
   .radio-group label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;font-size:12px;}
   .chip-grid{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;max-height:130px;overflow-y:auto;padding:2px;}
   .chip{border:1px solid var(--border);border-radius:4px;padding:3px 7px;font-size:11px;cursor:pointer;
-    background:#0f1418;color:var(--text-dim);user-select:none;}
-  .chip.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+    background:#1f1f1f;color:var(--text-dim);user-select:none;}
+  .chip.active{background:var(--accent);border-color:var(--accent);color:#1a1a1a;}
   .check-row{display:flex;align-items:center;gap:6px;margin:5px 0;font-size:12px;}
   .check-row input{width:auto;}
   .stat-line{color:var(--text-dim);font-size:11px;margin-top:6px;}
-  .btn{background:#0f1418;border:1px solid var(--border);color:var(--text);border-radius:5px;
+  .btn{background:#1f1f1f;border:1px solid var(--border);color:var(--text);border-radius:5px;
     padding:6px 10px;font-size:12px;cursor:pointer;}
   .btn:hover{border-color:var(--accent);color:var(--accent);}
-  .btn.primary{background:var(--accent);border-color:var(--accent);color:#08131f;font-weight:600;}
-  .btn.primary:hover{filter:brightness(1.08);color:#08131f;}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1a1a;font-weight:600;}
+  .btn.primary:hover{filter:brightness(1.08);color:#1a1a1a;}
   .btn.small{padding:3px 7px;font-size:11px;}
   .btn.danger:hover{border-color:#ff5d5d;color:#ff5d5d;}
   #palette{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center;}
   .swatch{width:20px;height:20px;border-radius:4px;cursor:pointer;border:2px solid transparent;}
-  .swatch.selected{border-color:#fff;}
+  .swatch.selected{border-color:#f5f5f5;}
   #custom-color{width:28px;height:22px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;}
   #selected-list{list-style:none;margin:0;padding:0;max-height:260px;overflow-y:auto;}
   #selected-list li{display:flex;align-items:center;gap:6px;padding:5px 4px;border-bottom:1px solid var(--border);font-size:11.5px;}
-  #selected-list li:hover{background:#0f1418;}
+  #selected-list li:hover{background:#1f1f1f;}
   .li-swatch{width:12px;height:12px;border-radius:3px;flex-shrink:0;cursor:pointer;}
   .li-label{flex:1;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .li-label .sub{color:var(--text-dim);}
   .li-x{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:0 3px;}
   .li-x:hover{color:#ff5d5d;}
   .footer-actions{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;}
-  #top-hint{position:absolute;top:10px;left:10px;background:rgba(15,20,24,.85);color:var(--text-dim);
+  #top-hint{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.8);color:var(--text-dim);
     font-size:11.5px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);pointer-events:none;z-index:5;}
-  #basemap-ctrl{position:absolute;top:10px;right:10px;background:rgba(15,20,24,.9);border:1px solid var(--border);
+  #basemap-ctrl{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.85);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #basemap-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
-  .maplibregl-ctrl-group button.hover-info-btn{display:flex;align-items:center;justify-content:center;color:#33383d;}
-  .maplibregl-ctrl-group button.hover-info-btn.active{background:#dfeeff;color:#1668c8;}
-  .maplibregl-popup-content{background:#161c22;color:var(--text);font-size:12px;border-radius:6px;padding:8px 22px 8px 10px;}
+  .maplibregl-ctrl-group button.hover-info-btn{display:flex;align-items:center;justify-content:center;color:#303030;}
+  .maplibregl-ctrl-group button.hover-info-btn.active{background:#b2daf7;color:#14425e;}
+  .maplibregl-popup-content{background:#303030;color:var(--text);font-size:12px;border-radius:6px;padding:8px 22px 8px 10px;}
   .maplibregl-popup-close-button{color:var(--text-dim);font-size:15px;line-height:1;padding:2px 6px;background:none;border:none;}
   .maplibregl-popup-close-button:hover{background:none;color:#ff5d5d;}
   .pop-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
   .btn[disabled]{opacity:.45;cursor:default;}
   .btn[disabled]:hover{border-color:var(--border);color:var(--text);}
-  .maplibregl-popup-tip{border-top-color:#161c22 !important;border-bottom-color:#161c22 !important;}
+  .maplibregl-popup-tip{border-top-color:#303030 !important;border-bottom-color:#303030 !important;}
   .maplibregl-ctrl-attrib{font-size:10px;}
   .pop-title{font-weight:600;margin-bottom:3px;}
   .pop-row{color:var(--text-dim);}
   .granule-list{max-height:220px;overflow-y:auto;margin-top:6px;border-top:1px solid var(--border);padding-top:4px;}
-  .granule-row{font-size:10.5px;color:var(--text-dim);padding:2px 0;border-bottom:1px solid rgba(42,51,59,.5);font-family:ui-monospace,Menlo,Consolas,monospace;}
+  .granule-row{font-size:10.5px;color:var(--text-dim);padding:2px 0;border-bottom:1px solid rgba(245,245,245,.12);font-family:ui-monospace,Menlo,Consolas,monospace;}
   .granule-row .gdate{color:var(--text);}
   .granule-row .gmode{color:var(--accent2);}
   .day-bar{fill:var(--accent);}
-  .day-bar:hover{fill:#9ecbff;}
+  .day-bar:hover{fill:#b2daf7;}
   .day-base{stroke:var(--border);stroke-width:1;}
   .day-axis{fill:var(--text-dim);font-size:9.5px;}
-  #chart-modal{position:fixed;inset:0;z-index:20;background:rgba(4,8,11,.62);display:flex;align-items:center;justify-content:center;}
+  #chart-modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;}
   #chart-modal[hidden]{display:none;}
   .chart-card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:8px;
     padding:12px 14px;max-width:min(780px,94vw);max-height:88vh;overflow:auto;}
@@ -525,25 +537,25 @@ APP_CSS = r"""
   .chart-sub{color:var(--text-dim);font-size:11px;margin:2px 0 8px 0;}
   .chart-tick{fill:var(--text-dim);font-size:10px;}
   .chart-row-label{fill:var(--text);font-size:10.5px;font-family:ui-monospace,Menlo,Consolas,monospace;}
-  .chart-grid{stroke:#2a333b;stroke-width:1;}
+  .chart-grid{stroke:#4a4a4a;stroke-width:1;}
   .chart-dot{stroke:var(--panel);stroke-width:2;cursor:pointer;}
-  .chart-dot:hover{stroke:#e8edf2;}
-  .chart-tip{position:absolute;pointer-events:none;background:#0f1418;border:1px solid var(--border);border-radius:5px;
+  .chart-dot:hover{stroke:#f5f5f5;}
+  .chart-tip{position:absolute;pointer-events:none;background:#1f1f1f;border:1px solid var(--border);border-radius:5px;
     padding:5px 7px;font-size:11px;color:var(--text);white-space:nowrap;z-index:2;}
   .chart-tip[hidden]{display:none;}
   .chart-tip .tdim{color:var(--text-dim);}
   .summary-grid{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
-  .stat-tile{flex:1;min-width:70px;background:#0f1418;border:1px solid var(--border);border-radius:6px;padding:6px 8px;}
+  .stat-tile{flex:1;min-width:70px;background:#1f1f1f;border:1px solid var(--border);border-radius:6px;padding:6px 8px;}
   .stat-tile .num{font-size:16px;font-weight:700;color:var(--text);}
   .stat-tile .cap{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.3px;}
   .bar-row{display:flex;align-items:center;gap:6px;margin:3px 0;font-size:11px;}
   .bar-row .bl{width:64px;color:var(--text-dim);flex-shrink:0;}
-  .bar-track{flex:1;height:10px;background:#0f1418;border-radius:5px;overflow:hidden;}
+  .bar-track{flex:1;height:10px;background:#1f1f1f;border-radius:5px;overflow:hidden;}
   .bar-fill{height:100%;border-radius:5px;}
   .bar-row .bn{width:34px;text-align:right;color:var(--text);flex-shrink:0;}
   ::-webkit-scrollbar{width:8px;height:8px;}
-  ::-webkit-scrollbar-thumb{background:#2a333b;border-radius:4px;}
-  #count-badge{background:var(--accent);color:#08131f;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;}
+  ::-webkit-scrollbar-thumb{background:#4a4a4a;border-radius:4px;}
+  #count-badge{background:var(--accent);color:#1a1a1a;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;}
 """
 
 
@@ -699,7 +711,7 @@ BODY_HTML = r"""<body>
 
 APP_JS = r"""
 (function(){
-  const PALETTE = ["#ff5d5d","#ff8a4d","#ffd24d","#7ee787","#4dd2c9","#4da3ff","#a389ff","#ff6fc7","#ffffff"];
+  const PALETTE = ["#76aedf","#b2daf7","#aad3c1","#6cbab8","#467b7b","#303030","#f5f5f5","#ffffff"];
   let currentColor = PALETTE[0];
   let applyColorBy = function(){};   // reassigned after map layers exist
   let refreshSummary = function(){}; // reassigned after DOM ready
@@ -719,10 +731,9 @@ APP_JS = r"""
   });
 
   // ---------- color-by support ----------
-  const CAT_PALETTE = ["#4da3ff","#ff8a4d","#7ee787","#ff5d5d","#a389ff","#ffd24d","#4dd2c9","#ff6fc7",
-                       "#f0b429","#6ee7b7","#93c5fd","#fca5a5","#c4b5fd","#fda4af","#86efac","#fcd34d"];
+  const CAT_PALETTE = ["#3f8fd0","#8ecfae","#2e9d9a","#b2daf7","#7c93a8"];
   // Sequential ramp (low -> high) for numeric color-by fields.
-  const SEQ_PALETTE = ["#2c7bb6","#00a6ca","#00ccbc","#90eb9d","#ffff8c","#f9d057","#f29e2e","#e76818","#d7191c"];
+  const SEQ_PALETTE = ["#d7ecfb","#b2daf7","#8cc3ec","#66a9dc","#4189c4","#2a6b9f","#1b4f78","#123c5c","#0b2a41"];
 
   const COLOR_BY_FIELDS = {
     passDirection: { label:"Pass Direction",      key:"passDirection", kind:"cat" },
@@ -740,13 +751,13 @@ APP_JS = r"""
     if (baseColorMapsCache[propKey]) return baseColorMapsCache[propKey];
     let m;
     if (propKey === "passDirection") {
-      m = new Map([["Ascending","#4da3ff"],["Descending","#ff8a4d"]]);
+      m = new Map([["Ascending","#3f8fd0"],["Descending","#8ecfae"]]);
     } else if (propKey === "cons_cov") {
-      m = new Map([["F","#4da3ff"],["P","#ff8a4d"],["none","#555a61"]]);
+      m = new Map([["F","#3f8fd0"],["P","#8ecfae"],["none","#6b6b6b"]]);
     } else {
       const vals = uniqSorted(FRAME_DATA.features.map(f=>String(f.properties[propKey])));
       m = new Map();
-      vals.forEach((v,i)=> m.set(v, v==="none" ? "#555a61" : CAT_PALETTE[i % CAT_PALETTE.length]));
+      vals.forEach((v,i)=> m.set(v, v==="none" ? "#6b6b6b" : CAT_PALETTE[i % CAT_PALETTE.length]));
     }
     baseColorMapsCache[propKey] = m;
     return m;
@@ -773,7 +784,7 @@ APP_JS = r"""
     const cmap = baseColorMap(info.key);
     const expr = ["match", ["to-string", ["get", info.key]]];
     cmap.forEach((color, val)=>{ expr.push(val, color); });
-    expr.push("#888888");
+    expr.push("#9a9a9a");
     return expr;
   }
 
@@ -1135,7 +1146,7 @@ APP_JS = r"""
     </div>
     <label style="margin-top:8px;">Frames per consistent mode</label>`;
     modeEntries.forEach(([mode,cnt])=>{
-      const col = cmap.get(mode) || "#888";
+      const col = cmap.get(mode) || "#9a9a9a";
       const pct = maxN ? (cnt/maxN*100) : 0;
       html += `<div class="bar-row"><span class="bl">${mode}</span>`+
               `<span class="bar-track"><span class="bar-fill" style="width:${pct}%;background:${col};"></span></span>`+
@@ -1428,7 +1439,7 @@ APP_JS = r"""
   // Categorical steps chosen for the dark panel surface; adjacent pairs clear the
   // colour-vision-deficiency separation floor. Every row is also directly
   // labelled, so identity never rests on colour alone.
-  const CHART_PALETTE = ["#3987e5","#d95926","#199e70","#c98500","#d55181","#008300","#9085e9","#e66767"];
+  const CHART_PALETTE = ["#3f8fd0","#8ecfae","#2e9d9a","#b2daf7","#7c93a8"];
   const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const DAY_MS = 86400000;
   let modeKeyOrder = null;
@@ -1446,7 +1457,7 @@ APP_JS = r"""
   // Fixed hue per mode across every frame, so a mode keeps its colour when the popup changes.
   function modeColor(key){
     const i = modeKeys().indexOf(key);
-    return i < 0 ? "#9aa7b2" : CHART_PALETTE[i % CHART_PALETTE.length];
+    return i < 0 ? "#9db4c6" : CHART_PALETTE[i % CHART_PALETTE.length];
   }
 
   function timeTicks(t0, t1){

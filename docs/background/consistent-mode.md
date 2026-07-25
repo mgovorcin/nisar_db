@@ -41,11 +41,15 @@ The selection reads three fields out of each GSLC granule name (parsed by
   is the field that ties a granule to its place on the ground alongside
   `track`/`frame`.
 
-The standard modes and families are defined once in `modes.py`:
+The standard modes and families are defined once in `modes.py`, **in preference
+order** — the order is what settles a frame observed in both science modes:
 
 ```python
-STANDARD_MODES = {"4005", "2005"}
-STANDARD_FAMILIES = {"40", "20"}
+MODE_PRIORITY = ("4005", "2005")
+FAMILY_PRIORITY = ("40", "20")
+
+STANDARD_MODES = frozenset(MODE_PRIORITY)
+STANDARD_FAMILIES = frozenset(FAMILY_PRIORITY)
 ```
 
 ## Location first: restrict to North America

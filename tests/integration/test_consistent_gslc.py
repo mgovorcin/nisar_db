@@ -10,6 +10,12 @@ from nisar_db.consistent_gslc import (
 )
 
 
+def _grp(*combos: tuple[str, str, int]) -> pd.DataFrame:
+    """Build a (track, frame) group from ``(mode, coverage, count)`` triples."""
+    rows = [{"mode": m, "coverage": c} for m, c, n in combos for _ in range(n)]
+    return pd.DataFrame(rows)
+
+
 def test_common_mode_coverage_prefers_standard_mode_and_full() -> None:
     grp = pd.DataFrame(
         {
@@ -18,6 +24,36 @@ def test_common_mode_coverage_prefers_standard_mode_and_full() -> None:
         }
     )
     assert _common_mode_coverage(grp) == ("4005", "F")
+
+
+def test_common_mode_coverage_full_beats_partial_across_modes() -> None:
+    # 4005 is the preferred mode, but it only ever comes in partial coverage
+    # here, so the full-frame 2005 stack wins -- even with fewer acquisitions.
+    grp = _grp(("4005", "P", 7), ("2005", "F", 1))
+    assert _common_mode_coverage(grp) == ("2005", "F")
+
+
+def test_common_mode_coverage_prefers_4005_when_both_full() -> None:
+    # Real case: track 163 / frame 11, an exact 4-vs-4 tie in full coverage.
+    grp = _grp(("2005", "F", 4), ("4005", "F", 4))
+    assert _common_mode_coverage(grp) == ("4005", "F")
+
+
+def test_common_mode_coverage_mode_priority_outranks_count() -> None:
+    grp = _grp(("2005", "F", 9), ("4005", "F", 2))
+    assert _common_mode_coverage(grp) == ("4005", "F")
+
+
+def test_common_mode_coverage_partial_majority_within_single_mode() -> None:
+    grp = _grp(("4005", "P", 7), ("4005", "F", 1))
+    assert _common_mode_coverage(grp) == ("4005", "P")
+
+
+def test_common_mode_coverage_is_order_independent() -> None:
+    combos = [("2005", "F", 4), ("4005", "F", 4), ("7700", "P", 9)]
+    assert _common_mode_coverage(_grp(*combos)) == _common_mode_coverage(
+        _grp(*reversed(combos))
+    )
 
 
 def test_common_mode_coverage_falls_back_to_nonstandard() -> None:
