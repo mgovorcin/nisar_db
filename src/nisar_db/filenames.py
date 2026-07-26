@@ -26,8 +26,9 @@ class NISARCollection:
     GUNW_PROVISIONAL_V1_SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
     GUNW_PR_SHORT_NAME = "NISAR_L2_PR_GUNW"  # Original/alternative GUNW short name
 
-    # Default collections searched per product type. CMR ORs multiple
-    # ``short_name`` values, so a single search spans all listed collections.
+    # Every collection per product type; searches default to PROVISIONAL only.
+    # CMR ORs multiple ``short_name`` values, so passing the whole tuple spans
+    # all listed collections in a single search.
     # GSLC_PROVISIONAL_V1 is concept-id C2854332392-ASF.
     GSLC_SHORT_NAMES = (GSLC_BETA_V1_SHORT_NAME, GSLC_PROVISIONAL_V1_SHORT_NAME)
     GUNW_SHORT_NAMES = (GUNW_BETA_V1_SHORT_NAME, GUNW_PROVISIONAL_V1_SHORT_NAME)
