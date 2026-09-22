@@ -143,3 +143,27 @@ def test_plot_adds_a_duplicates_row_only_when_there_are_duplicates() -> None:
     assert result["lanes"] == ["20_F", "40_F", "duplicates"]
     assert result["dups"] == [["g1", "g2"]]
     assert result["single"] is False
+
+
+def test_search_reads_lat_lon_in_either_order() -> None:
+    result = run_js(
+        ["parseCoords"],
+        "return [parseCoords('34.2 -118.2'), parseCoords('-118.2, 34.2'),"
+        " parseCoords('Los Angeles')];",
+    )
+    assert result == [{"lat": 34.2, "lon": -118.2}, {"lat": 34.2, "lon": -118.2}, None]
+
+
+def test_search_matches_frames_by_id_or_track_and_frame() -> None:
+    frames = [
+        {"properties": {"frame_idx": 8109, "track": 47, "frame": 14}},
+        {"properties": {"frame_idx": 8110, "track": 47, "frame": 15}},
+        {"properties": {"frame_idx": 19776, "track": 113, "frame": 65}},
+    ]
+    result = run_js(
+        ["matchFrames"],
+        "const ids = q => matchFrames(q).map(f => f.properties.frame_idx);"
+        " return [ids('81'), ids('T113_F65'), ids('t47 f15'), ids('Denver')];",
+        frames,
+    )
+    assert result == [[8109, 8110], [19776], [8110], []]
