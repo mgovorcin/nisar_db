@@ -134,6 +134,7 @@
   .chart-tick{fill:var(--text-dim);font-size:10px;}
   .chart-row-label{fill:var(--text);font-size:10.5px;font-family:ui-monospace,Menlo,Consolas,monospace;}
   .chart-grid{stroke:var(--border);stroke-width:1;}
+  .chart-blackout{fill:#8c8c8c;fill-opacity:.24;}
   .chart-dot{stroke:var(--panel);stroke-width:2;cursor:pointer;}
   .chart-dot:hover{stroke:#f5f5f5;}
   .chart-tip{position:absolute;pointer-events:none;background:var(--inset);border:1px solid var(--border);border-radius:5px;
@@ -1287,7 +1288,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
 
   const DUP_ROW = "duplicates";
 
-  function modeTimelineSvg(granules){
+  function modeTimelineSvg(granules, p){
     chartPoints = granules.filter(g=>g.date).map(g=>({
       t: Date.parse(`${g.date}T00:00:00Z`), key: `${g.mode}_${g.cov}`, dir: g.dir, g
     })).sort((a,b)=>a.t-b.t);
@@ -1324,6 +1325,17 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     const xOf = t => padL + (t - t0) / (t1 - t0) * (W - padL - padR);
     const yOf = key => padT + rows.indexOf(key) * rowH + rowH / 2;
 
+    // Blackout windows as gray bands behind everything, clipped to the plotted span.
+    const blackoutWindows = (p && p.has_blackout ? asArray(p.blackout_ranges) : []).map(r=>{
+      const [a, b] = String(r).split("->").map(s=>s.trim());
+      return {a, b, ta: Date.parse(`${a}T00:00:00Z`), tb: Date.parse(`${b}T23:59:59Z`)};
+    }).filter(w=>isFinite(w.ta) && isFinite(w.tb) && w.tb > t0 && w.ta < t1);
+    const bands = blackoutWindows.map(w=>{
+      const x0 = xOf(Math.max(w.ta, t0)), x1 = xOf(Math.min(w.tb, t1));
+      return `<rect class="chart-blackout" x="${x0.toFixed(1)}" y="${padT}" width="${(x1 - x0).toFixed(1)}" `+
+             `height="${H - padT - padB}"><title>Blackout ${w.a} to ${w.b}</title></rect>`;
+    }).join("");
+
     const ticks = timeTicks(t0, t1).map(tk=>
       `<line class="chart-grid" x1="${xOf(tk.t).toFixed(1)}" x2="${xOf(tk.t).toFixed(1)}" y1="${padT}" y2="${H-padB}" opacity="0.55"/>`+
       `<text class="chart-tick" x="${xOf(tk.t).toFixed(1)}" y="${H-padB+14}" text-anchor="middle">${tk.label}</text>`
@@ -1346,10 +1358,12 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       return `<circle class="chart-dot" data-i="${i}" cx="${x.toFixed(1)}" cy="${y}" r="4.5" fill="${fill}"/>`;
     }).join("");
     const shapeKey = uniqSorted(chartPoints.map(pt=>pt.dir)).map(d=>
-      d === "D" ? "&#9670; descending" : d === "A" ? "&#9679; ascending" : `? ${d}`).join(" &middot; ");
+      d === "D" ? "&#9670; descending" : d === "A" ? "&#9679; ascending" : `? ${d}`)
+      .concat(blackoutWindows.length ? [`<span style="color:#8c8c8c">&#9632;</span> blackout (${p.blackout_label})`] : [])
+      .join(" &middot; ");
 
     return `<svg id="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="GSLC acquisitions by mode over time">${ticks}${lanes}${dots}</svg>`+
+      aria-label="GSLC acquisitions by mode over time">${bands}${ticks}${lanes}${dots}</svg>`+
       `<div class="chart-sub">${shapeKey}</div>`;
   }
 
@@ -1361,7 +1375,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     document.getElementById("chart-sub").textContent = dated.length
       ? `${dated.length} GSLC granules${dup} - ${dated[0]} to ${dated[dated.length-1]}`
       : "No dated GSLC granules";
-    document.getElementById("chart-body").innerHTML = modeTimelineSvg(granules);
+    document.getElementById("chart-body").innerHTML = modeTimelineSvg(granules, p);
     document.getElementById("chart-modal").hidden = false;
   }
 

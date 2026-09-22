@@ -167,3 +167,17 @@ def test_search_matches_frames_by_id_or_track_and_frame() -> None:
         frames,
     )
     assert result == [[8109, 8110], [19776], [8110], []]
+
+
+def test_plot_shades_blackout_windows_clipped_to_the_plotted_span() -> None:
+    result = run_js(
+        CHART,
+        "const p = {has_blackout: true, blackout_label: 'Sep-May', blackout_ranges:"
+        " JSON.stringify(['2025-09-28 -> 2026-05-26', '2027-09-28 -> 2028-05-26'])};"
+        " const svg = modeTimelineSvg(GRANULES, p);"
+        " const none = modeTimelineSvg(GRANULES, {has_blackout: false});"
+        ' return {bands: (svg.match(/class="chart-blackout"/g) || []).length,'
+        " legend: svg.includes('blackout (Sep-May)'),"
+        " none: none.includes('chart-blackout')};",
+    )
+    assert result == {"bands": 1, "legend": True, "none": False}
