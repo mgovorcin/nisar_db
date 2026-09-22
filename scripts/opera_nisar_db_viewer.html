@@ -99,6 +99,7 @@
   .granule-row{font-size:10.5px;color:var(--text-dim);padding:2px 0;border-bottom:1px solid var(--hairline);font-family:ui-monospace,Menlo,Consolas,monospace;}
   .granule-row .gdate{color:var(--text);}
   .granule-row .gmode{color:var(--accent2);}
+  .granule-row.dup-gid{padding-left:12px;}
   .day-bar{fill:var(--accent);}
   .day-bar:hover{fill:#b2daf7;}
   .day-base{stroke:var(--border);stroke-width:1;}
@@ -1125,8 +1126,30 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
            `&middot; ${p.n_duplicate} duplicate granule(s) on the same date &amp; mode</div>`;
   }
 
+  // Granules that share a date, mode and coverage -- the same key n_unique counts
+  // -- grouped so each repeated acquisition lists every granule delivered for it.
+  function duplicateGroups(granules){
+    const groups = new Map();
+    granules.forEach(g=>{
+      const key = `${g.date}|${g.mode}|${g.cov}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(g);
+    });
+    return Array.from(groups.values()).filter(gs=>gs.length > 1);
+  }
+
+  function duplicateRowsHtml(groups){
+    return groups.map(gs=>
+      `<div class="granule-row"><span class="gdate">${gs[0].date}</span> `+
+      `<span class="gmode">${gs[0].mode}_${gs[0].cov}</span> &middot; ${gs.length} granules</div>`+
+      gs.map(g=>`<div class="granule-row dup-gid">${g.pol} ${g.dir} c${g.cycle}<br>${g.gid}</div>`).join("")
+    ).join("");
+  }
+
   function granulePopupHtml(p){
     const granules = parseGranules(p);
+    const dupGroups = duplicateGroups(granules);
+    const nDup = dupGroups.reduce((n, gs)=>n + gs.length - 1, 0);
     const isSel = selected.has(p.id);
     const dirs = uniqSorted(granules.map(g=>g.dir));
     const dirChips = dirs.length > 1
@@ -1148,8 +1171,10 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
         <button class="btn small" id="pop-granules"${granules.length ? "" : " disabled"}>Show granules (${granules.length})</button>
         <button class="btn small" id="pop-csv"${granules.length ? "" : " disabled"}>Export CSV</button>
         <button class="btn small" id="pop-plot"${granules.length ? "" : " disabled"}>Show plot</button>
+        ${nDup ? `<button class="btn small" id="pop-dups">Show duplicates (${nDup})</button>` : ""}
       </div>
-      <div id="pop-granule-panel" hidden>${dirChips}<div class="granule-list" id="pop-granule-list">${rows}</div></div>`;
+      <div id="pop-granule-panel" hidden>${dirChips}<div class="granule-list" id="pop-granule-list">${rows}</div></div>
+      ${nDup ? `<div id="pop-dup-panel" hidden><div class="granule-list">${duplicateRowsHtml(dupGroups)}</div></div>` : ""}`;
   }
 
   function granuleRowsHtml(granules){
@@ -1184,6 +1209,15 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       list.innerHTML = granuleRowsHtml(shown) ||
         `<div class="granule-row">No ${DIR_LABEL[dir] || dir} granules for this frame.</div>`;
     });
+    const dupBtn = document.getElementById("pop-dups");
+    const dupPanel = document.getElementById("pop-dup-panel");
+    if (dupBtn && dupPanel) {
+      const label = dupBtn.textContent.replace(/^Show /, "");
+      dupBtn.addEventListener("click", ()=>{
+        dupPanel.hidden = !dupPanel.hidden;
+        dupBtn.textContent = `${dupPanel.hidden ? "Show" : "Hide"} ${label}`;
+      });
+    }
     const csvBtn = document.getElementById("pop-csv");
     if (csvBtn) csvBtn.addEventListener("click", ()=>
       downloadBlob(granuleCsv(p, granules), `nisar_granules_${p.id}.csv`, "text/csv"));
