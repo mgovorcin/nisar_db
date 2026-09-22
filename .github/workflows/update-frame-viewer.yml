@@ -124,9 +124,13 @@ jobs:
           echo "VIEWER_EXTRA=$EXTRA" >> "$GITHUB_ENV"
           echo "Extra viewer inputs:${EXTRA:- none}"
 
+      # The GUNW view reads the catalog the daily catalog Action commits, in
+      # whichever form is on the branch (.json.gz, or the older plain .json).
       - name: Render the viewer HTML
         run: |
+          GUNW=$(ls catalog/gunw_interferograms.json.gz catalog/gunw_interferograms.json 2>/dev/null | head -n1)
           python scripts/generate_scope_viewer.py \
+            ${GUNW:+--gunw-catalog "$GUNW"} \
             --frames-gpkg opera-nisar-disp-frames.gpkg \
             --gslc-catalog gslc_catalog.csv \
             --consistent-json opera-nisar-disp-consistent-gslc-${DATE}.json \
