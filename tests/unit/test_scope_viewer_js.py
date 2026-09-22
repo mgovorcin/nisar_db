@@ -128,3 +128,18 @@ def test_duplicate_list_names_every_granule_in_a_group() -> None:
     )
     assert "2 granules" in html
     assert "g1" in html and "g2" in html and "g3" not in html
+
+
+def test_plot_adds_a_duplicates_row_only_when_there_are_duplicates() -> None:
+    result = run_js(
+        CHART,
+        "const svg = modeTimelineSvg(GRANULES); "
+        + LANES
+        + " const dups = chartPoints.filter(p => p.group)"
+        + ".map(p => p.group.map(g => g.gid));"
+        + " const svg2 = modeTimelineSvg(GRANULES.slice(2));"
+        + " return {lanes, dups, single: svg2.includes('>duplicates<')};",
+    )
+    assert result["lanes"] == ["20_F", "40_F", "duplicates"]
+    assert result["dups"] == [["g1", "g2"]]
+    assert result["single"] is False

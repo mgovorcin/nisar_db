@@ -1778,6 +1778,8 @@ APP_JS = r"""
     return ticks;
   }
 
+  const DUP_ROW = "duplicates";
+
   function modeTimelineSvg(granules){
     chartPoints = granules.filter(g=>g.date).map(g=>({
       t: Date.parse(`${g.date}T00:00:00Z`), key: `${g.mode}_${g.cov}`, dir: g.dir, g
@@ -1790,7 +1792,21 @@ APP_JS = r"""
     chartPoints.forEach(pt=> stacks.set(`${pt.t}|${pt.key}`, (stacks.get(`${pt.t}|${pt.key}`) || 0) + 1));
     chartPoints.forEach(pt=> pt.stack = stacks.get(`${pt.t}|${pt.key}`));
 
+    // One extra lane repeats each stacked date & mode as a single dot, so the
+    // duplicates are visible at a glance rather than only in a tooltip.
     const rows = uniqSorted(chartPoints.map(pt=>pt.key));
+    const dupPoints = [];
+    const dupSeen = new Map();
+    chartPoints.filter(pt=>pt.stack > 1).forEach(pt=>{
+      const k = `${pt.t}|${pt.key}`;
+      if (!dupSeen.has(k)) {
+        dupSeen.set(k, {t: pt.t, key: DUP_ROW, modeKey: pt.key, dir: pt.dir, g: pt.g, stack: pt.stack, group: []});
+        dupPoints.push(dupSeen.get(k));
+      }
+      dupSeen.get(k).group.push(pt.g);
+    });
+    if (dupPoints.length) rows.push(DUP_ROW);
+    chartPoints = chartPoints.concat(dupPoints);
     const padL = 96, padR = 24, padT = 10, padB = 30, rowH = 34;
     const W = Math.min(720, Math.max(420, window.innerWidth - 140));
     const H = padT + rows.length * rowH + padB;
@@ -1814,7 +1830,7 @@ APP_JS = r"""
     // Circle = ascending, diamond = descending; shape carries the direction so it
     // survives the mode colouring and colour-vision deficiency alike.
     const dots = chartPoints.map((pt,i)=>{
-      const x = xOf(pt.t), y = yOf(pt.key), fill = modeColor(pt.key);
+      const x = xOf(pt.t), y = yOf(pt.key), fill = modeColor(pt.modeKey || pt.key);
       if (pt.dir === "D") {
         const r = 5.2;
         const pts = [[x, y-r],[x+r, y],[x, y+r],[x-r, y]].map(c=>c.map(v=>v.toFixed(1)).join(",")).join(" ");
@@ -1859,12 +1875,17 @@ APP_JS = r"""
     const dot = e.target.closest ? e.target.closest(".chart-dot[data-i]") : null;
     if (!dot) { chartTip.hidden = true; return; }
     const pt = chartPoints[Number(dot.dataset.i)];
-    const stacked = pt.stack > 1
-      ? `<br><span class="tdim">${pt.stack} granules here (${pt.stack - 1} duplicate) - showing the top one</span>`
-      : "";
-    chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.key}<br>`+
-      `<span class="tdim">${pt.g.pol} &middot; ${DIR_LABEL[pt.dir] || pt.dir} &middot; cycle ${pt.g.cycle}</span><br>`+
-      `<span class="tdim">${pt.g.gid}</span>${stacked}`;
+    if (pt.group) {
+      chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.modeKey} &middot; ${pt.group.length} granules<br>`+
+        pt.group.map(g=>`<span class="tdim">${g.pol} &middot; ${DIR_LABEL[g.dir] || g.dir} &middot; ${g.gid}</span>`).join("<br>");
+    } else {
+      const stacked = pt.stack > 1
+        ? `<br><span class="tdim">${pt.stack} granules here (${pt.stack - 1} duplicate) - showing the top one</span>`
+        : "";
+      chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.key}<br>`+
+        `<span class="tdim">${pt.g.pol} &middot; ${DIR_LABEL[pt.dir] || pt.dir} &middot; cycle ${pt.g.cycle}</span><br>`+
+        `<span class="tdim">${pt.g.gid}</span>${stacked}`;
+    }
     // Unhide first: a display:none tip measures 0 wide and would defeat the clamp.
     chartTip.hidden = false;
     const card = chartTip.parentElement.getBoundingClientRect();
