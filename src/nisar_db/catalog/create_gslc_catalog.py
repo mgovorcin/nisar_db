@@ -149,7 +149,9 @@ def generate_catalog_json(conn, output_dir: str) -> None:
         if row["granule_id"] not in scenes[scene_key]["granule_ids"]:
             scenes[scene_key]["granule_ids"].append(row["granule_id"])
 
-    write_catalog_json(output_dir, "gslc_scenes.json", "scenes", list(scenes.values()))
+    write_catalog_json(
+        output_dir, "gslc_scenes.json.gz", "scenes", list(scenes.values())
+    )
 
     logger.info(f"Generated catalog JSON files in {output_dir}")
 
