@@ -72,6 +72,14 @@
   .li-x{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:0 3px;}
   .li-x:hover{color:#ff5d5d;}
   .footer-actions{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;}
+  #product-ctrl{position:absolute;top:10px;left:10px;background:var(--scrim);border:1px solid var(--border);
+    border-radius:6px;padding:3px;z-index:5;font-size:11.5px;display:flex;gap:2px;}
+  #product-ctrl[hidden]{display:none;}
+  #product-ctrl button{background:none;border:none;color:var(--text);padding:3px 10px;border-radius:4px;cursor:pointer;font:inherit;}
+  #product-ctrl button.active{background:var(--accent);color:var(--bg);font-weight:600;}
+  #map.has-product #pass-ctrl{top:48px;}
+  #map.has-product #click-ctrl{top:86px;}
+  #map.has-product #search{top:124px;}
   #pass-ctrl{position:absolute;top:10px;left:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #pass-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
@@ -137,6 +145,9 @@
   .chart-blackout{fill:#8c8c8c;fill-opacity:.24;}
   .chart-dot{stroke:var(--panel);stroke-width:2;cursor:pointer;}
   .chart-dot:hover{stroke:#f5f5f5;}
+  .chart-ifg{stroke-width:3;stroke-linecap:round;cursor:pointer;}
+  .chart-ifg:hover{stroke-width:5;}
+  .chart-ifg-end{pointer-events:none;stroke:var(--panel);stroke-width:1;}
   .chart-tip{position:absolute;pointer-events:none;background:var(--inset);border:1px solid var(--border);border-radius:5px;
     padding:5px 7px;font-size:11px;color:var(--text);white-space:nowrap;z-index:2;}
   .chart-tip[hidden]{display:none;}
@@ -166,9 +177,9 @@
     <div id="sidebar-scroll">
 
       <div class="section">
-        <div class="section-head" data-target="sec-daily"><span>GSLC Acquisitions Over Time</span><span class="chev">&#9660;</span></div>
+        <div class="section-head" data-target="sec-daily"><span id="daily-title">GSLC Acquisitions Over Time</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-daily">
-          <div class="stat-line">GSLC granules in CMR over North America, counted by acquisition date across the frames currently shown. Hover a bar for its count.</div>
+          <div class="stat-line" id="daily-note">GSLC granules in CMR over North America, counted by acquisition date across the frames currently shown. Hover a bar for its count.</div>
           <div class="date-row">
             <input type="date" id="f-date-start" aria-label="First acquisition date">
             <span style="color:var(--text-dim);font-size:11px;">to</span>
@@ -207,6 +218,7 @@
             <option value="blackout_months" id="opt-blackout" hidden>Blackout duration (months)</option>
             <option value="gslc_modes">GSLC mode (most common)</option>
             <option value="gslc_pols">GSLC polarization (most common)</option>
+            <option value="gunw_count" id="opt-gunw" hidden>GUNW interferograms</option>
           </select>
           <label>Fill opacity (<span id="opacity-val">32</span>%)</label>
           <input type="range" id="fill-opacity" min="0" max="100" value="32">
@@ -217,7 +229,7 @@
 
 
       <div class="section">
-        <div class="section-head" data-target="sec-gslc"><span>GSLC Mode / Polarization</span><span class="chev">&#9660;</span></div>
+        <div class="section-head" data-target="sec-gslc"><span id="chips-title">GSLC Mode / Polarization</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-gslc">
           <label>Mode (click to toggle)</label>
           <div class="chip-grid" id="chips-gslc-mode"></div>
@@ -250,14 +262,6 @@
       </div>
 
 
-      <div class="section" id="section-blackout" hidden>
-        <div class="section-head" data-target="sec-blackout"><span>Blackout &amp; Reference Dates</span><span class="chev">&#9660;</span></div>
-        <div class="section-body" id="sec-blackout">
-          <div class="check-row"><input type="checkbox" id="f-blackout"><label for="f-blackout" style="margin:0;color:var(--text)">Frames with a blackout window only</label></div>
-          <div class="stat-line">Blackout windows repeat yearly (e.g. seasonal snow). Color frames by "Blackout duration (months)" above; hover or click a frame to see the exact blacked-out ranges and any InSAR reference resets.</div>
-          <div id="blackout-summary"></div>
-        </div>
-      </div>
 
 
       <div class="section collapsed">
@@ -289,6 +293,10 @@
     </div>
   </div>
   <div id="map">
+    <div id="product-ctrl" role="group" aria-label="Product shown on the map" hidden>
+      <button type="button" data-product="gslc" class="active">GSLC</button>
+      <button type="button" data-product="gunw">GUNW</button>
+    </div>
     <div id="pass-ctrl">
       <label><input type="radio" name="pass" value="all" checked> All</label>
       <label><input type="radio" name="pass" value="Ascending"> Asc</label>
@@ -395,6 +403,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   let applyColorBy = function(){};   // reassigned after map layers exist
   let refreshSummary = function(){}; // reassigned after DOM ready
   const selected = new Map();        // id -> {feature, color}
+  let product = "gslc";              // "gslc" or "gunw", flipped by the product switch
 
   // ---------- derive filter option lists ----------
   function uniqSorted(arr){ return Array.from(new Set(arr)).sort(); }
@@ -410,7 +419,10 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
 
   const allModesGslc = uniqSorted(FRAME_DATA.features.flatMap(f => f.properties.gslc_modes));
   const allPolsGslc  = uniqSorted(FRAME_DATA.features.flatMap(f => f.properties.gslc_pols));
-  const activeChips = { gslcMode:new Set(), gslcPol:new Set() };
+  const allModesGunw = uniqSorted(FRAME_DATA.features.flatMap(f => asArray(f.properties.gunw_modes)));
+  const allPolsGunw  = uniqSorted(FRAME_DATA.features.flatMap(f => asArray(f.properties.gunw_pols)));
+  // Each product keeps its own chip selection across the GSLC / GUNW switch.
+  const activeChips = { gslcMode:new Set(), gslcPol:new Set(), gunwMode:new Set(), gunwPol:new Set() };
 
   // Single-value derived keys for the array-valued mode/pol properties.
   FRAME_DATA.features.forEach(f=>{
@@ -435,7 +447,8 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     n_modes:       { label:"Distinct modes",       key:"n_modes",       kind:"num" },
     blackout_months:{ label:"Blackout months",     key:"blackout_months", kind:"num" },
     gslc_modes:    { label:"GSLC mode",            key:"_gslcMode",     kind:"cat" },
-    gslc_pols:     { label:"GSLC polarization",    key:"_gslcPol",      kind:"cat" }
+    gslc_pols:     { label:"GSLC polarization",    key:"_gslcPol",      kind:"cat" },
+    gunw_count:    { label:"GUNW interferograms",  key:"gunw_count_sel", kind:"num" }
   };
 
   const baseColorMapsCache = {};
@@ -537,11 +550,20 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       el.appendChild(c);
     });
   }
+  // The chip grids show whichever product the map is on; GUNW starts unfiltered.
+  function renderChips(){
+    const gunw = product === "gunw";
+    const modeSet = gunw ? activeChips.gunwMode : activeChips.gslcMode;
+    const polSet = gunw ? activeChips.gunwPol : activeChips.gslcPol;
+    buildChips("chips-gslc-mode", gunw ? allModesGunw : allModesGslc, modeSet, Array.from(modeSet));
+    buildChips("chips-gslc-pol", gunw ? allPolsGunw : allPolsGslc, polSet, Array.from(polSet));
+    document.getElementById("chips-title").textContent = `${gunw ? "GUNW" : "GSLC"} Mode / Polarization`;
+  }
   function buildGslcChips(){
-    activeChips.gslcMode.clear();
-    activeChips.gslcPol.clear();
-    buildChips("chips-gslc-mode", allModesGslc, activeChips.gslcMode, DEFAULT_GSLC_MODES);
-    buildChips("chips-gslc-pol", allPolsGslc, activeChips.gslcPol, DEFAULT_GSLC_POLS);
+    Object.values(activeChips).forEach(s=>s.clear());
+    DEFAULT_GSLC_MODES.filter(v=>allModesGslc.includes(v)).forEach(v=>activeChips.gslcMode.add(v));
+    DEFAULT_GSLC_POLS.filter(v=>allPolsGslc.includes(v)).forEach(v=>activeChips.gslcPol.add(v));
+    renderChips();
   }
   buildGslcChips();
 
@@ -557,13 +579,16 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       `${source}: ${new Date(queriedAt).toISOString().slice(0,16).replace("T"," ")} UTC`;
   }
 
-  // Reveal the blackout controls only when the viewer was built with blackout data.
-  if (META.has_blackout) {
-    const sec = document.getElementById("section-blackout");
-    const opt = document.getElementById("opt-blackout");
-    if (sec) sec.hidden = false;
-    if (opt) opt.hidden = false;
+  // Blackout windows show in the frame popup and as bands in Show plot; the
+  // colour option is revealed only when the viewer was built with blackout data.
+  // The GSLC / GUNW switch only exists when the viewer was built with a GUNW catalog.
+  if (META.has_gunw) {
+    document.getElementById("product-ctrl").hidden = false;
+    document.getElementById("map").classList.add("has-product");
+    document.getElementById("opt-gunw").hidden = false;
   }
+
+  if (META.has_blackout) document.getElementById("opt-blackout").hidden = false;
 
   // ---------- blackout / reference helpers ----------
   function asArray(v){ return typeof v === "string" ? JSON.parse(v) : (v || []); }
@@ -592,20 +617,6 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     return html;
   }
 
-  function refreshBlackoutSummary(features){
-    if (!META.has_blackout) return;
-    const el = document.getElementById("blackout-summary");
-    if (!el) return;
-    const bo = features.filter(f=>f.properties.has_blackout);
-    if (!bo.length) { el.innerHTML = `<div class="stat-line">No blacked-out frames shown.</div>`; return; }
-    const months = bo.map(f=>f.properties.blackout_months);
-    const avg = (months.reduce((a,b)=>a+b,0)/months.length).toFixed(1);
-    el.innerHTML = `<div class="summary-grid">
-      <div class="stat-tile"><div class="num">${bo.length}</div><div class="cap">blackout frames</div></div>
-      <div class="stat-tile"><div class="num">${avg}</div><div class="cap">avg months</div></div>
-      <div class="stat-tile"><div class="num">${Math.max(...months)}</div><div class="cap">max months</div></div>
-    </div>`;
-  }
 
   // ---------- palette ----------
   const paletteEl = document.getElementById("palette");
@@ -659,8 +670,6 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     const idFilter = document.getElementById("f-id").value.trim().toLowerCase();
     const passVal = document.querySelector('input[name="pass"]:checked').value;
     const calval = document.getElementById("f-calval").checked;
-    const blackoutEl = document.getElementById("f-blackout");
-    const blackoutOnly = blackoutEl && blackoutEl.checked;
     return FRAME_DATA.features.filter(f=>{
       const p = f.properties;
       if (trackSet && !trackSet.has(p.track)) return false;
@@ -669,15 +678,20 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
           !String(p.frame_idx).includes(idFilter)) return false;
       if (passVal !== "all" && p.passDirection !== passVal) return false;
       if (calval && !p.isCalVal) return false;
-      if (blackoutOnly && !p.has_blackout) return false;
-      if (!matchesArrayFilter(p.gslc_modes, activeChips.gslcMode)) return false;
-      if (!matchesArrayFilter(p.gslc_pols, activeChips.gslcPol)) return false;
+      if (product === "gunw") {
+        if (!matchesArrayFilter(asArray(p.gunw_modes), activeChips.gunwMode)) return false;
+        if (!matchesArrayFilter(asArray(p.gunw_pols), activeChips.gunwPol)) return false;
+      } else {
+        if (!matchesArrayFilter(p.gslc_modes, activeChips.gslcMode)) return false;
+        if (!matchesArrayFilter(p.gslc_pols, activeChips.gslcPol)) return false;
+      }
       return true;
     });
   }
 
   function applyFilters(){
     updateSelectedGslcCounts();
+    updateSelectedGunwCounts();
     const filtered = currentFiltered();
     if (map.getSource("frames")) {
       map.getSource("frames").setData({type:"FeatureCollection", features: filtered});
@@ -685,7 +699,6 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     document.getElementById("hdr-count").textContent = filtered.length;
     applyColorBy();          // the GSLC-count ramp follows the mode/pol chips
     refreshSummary(filtered);
-    refreshBlackoutSummary(filtered);
     refreshDailyChart(filtered);
   }
 
@@ -719,6 +732,16 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   }
   updateSelectedGslcCounts();
 
+  // The GUNW ramp follows the GUNW chips the same way.
+  function updateSelectedGunwCounts(){
+    const modes = activeChips.gunwMode, pols = activeChips.gunwPol;
+    FRAME_DATA.features.forEach(f=>{
+      f.properties.gunw_count_sel = asArray(f.properties.gunw_ifgs).filter(g=>
+        (!modes.size || modes.has(g.mode)) && (!pols.size || pols.has(g.pol))).length;
+    });
+  }
+  updateSelectedGunwCounts();
+
   // ---------- GSLC acquisitions over time ----------
   // Per-frame date histograms are built once: the chart is redrawn on every
   // filter keystroke, and re-walking 60k+ granules each time is not free.
@@ -731,6 +754,23 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     })
   );
 
+  // In GUNW mode the chart counts interferograms by secondary date, the day a
+  // pair became possible.
+  const GUNW_DAY_COUNTS_BY_FRAME = new Map(
+    FRAME_DATA.features.map(f=>{
+      const per = new Map();
+      asArray(f.properties.gunw_ifgs).forEach(g=>{ if (g.sec) per.set(g.sec, (per.get(g.sec)||0)+1); });
+      return [f.properties.id, Array.from(per.entries())];
+    })
+  );
+
+  const DAILY_TEXT = {
+    gslc: {title:"GSLC Acquisitions Over Time", unit:"granule", empty:"GSLC acquisitions",
+           note:"GSLC granules in CMR over North America, counted by acquisition date across the frames currently shown. Hover a bar for its count."},
+    gunw: {title:"GUNW Interferograms Over Time", unit:"interferogram", empty:"GUNW interferograms",
+           note:"GUNW interferograms in the catalog, counted by secondary date across the frames currently shown. Hover a bar for its count."},
+  };
+
   const BIN_LABEL = {1:"per day", 7:"per week", 30:"per month"};
   let dailyBins = [];
 
@@ -742,7 +782,11 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     const from = document.getElementById("f-date-start").value;
     const to = document.getElementById("f-date-end").value;
     const counts = new Map();
-    features.forEach(f=> (DAY_COUNTS_BY_FRAME.get(f.properties.id)||[]).forEach(([d,n])=>{
+    const text = DAILY_TEXT[product];
+    const byFrame = product === "gunw" ? GUNW_DAY_COUNTS_BY_FRAME : DAY_COUNTS_BY_FRAME;
+    document.getElementById("daily-title").textContent = text.title;
+    document.getElementById("daily-note").textContent = text.note;
+    features.forEach(f=> (byFrame.get(f.properties.id)||[]).forEach(([d,n])=>{
       if (from && d < from) return;
       if (to && d > to) return;
       counts.set(d, (counts.get(d)||0) + n);
@@ -750,7 +794,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     const days = Array.from(counts.keys()).sort();
     dailyBins = [];
     if (!days.length) {
-      el.innerHTML = `<div class="stat-line">No GSLC acquisitions in the frames shown${from || to ? " for this date range" : ""}.</div>`;
+      el.innerHTML = `<div class="stat-line">No ${text.empty} in the frames shown${from || to ? " for this date range" : ""}.</div>`;
       return;
     }
 
@@ -784,14 +828,14 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
 
     el.innerHTML =
       `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"`+
-      ` aria-label="GSLC granules ${BIN_LABEL[binDays]}">`+
+      ` aria-label="${text.empty} ${BIN_LABEL[binDays]}">`+
       `<text class="day-axis" x="0" y="9">peak ${maxN}</text>`+
       `${bars}`+
       `<line class="day-base" x1="0" x2="${W}" y1="${H-padB}" y2="${H-padB}"/>`+
       `<text class="day-axis" x="0" y="${H-4}">${fmt(t0)}</text>`+
       `<text class="day-axis" x="${W}" y="${H-4}" text-anchor="end">${fmt(t1)}</text>`+
       `</svg>`+
-      `<div class="stat-line">${total.toLocaleString()} granules &middot; counted ${BIN_LABEL[binDays]}</div>`;
+      `<div class="stat-line">${total.toLocaleString()} ${text.unit}s &middot; counted ${BIN_LABEL[binDays]}</div>`;
   }
 
   document.getElementById("daily-chart").addEventListener("mousemove", (e)=>{
@@ -801,7 +845,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     const b = dailyBins[Number(bar.dataset.i)];
     const start = new Date(b.t).toISOString().slice(0,10);
     const end = new Date(b.t + (b.binDays-1)*DAY_MS).toISOString().slice(0,10);
-    tip.innerHTML = `<b>${b.n}</b> granule${b.n === 1 ? "" : "s"}<br>`+
+    tip.innerHTML = `<b>${b.n}</b> ${DAILY_TEXT[product].unit}${b.n === 1 ? "" : "s"}<br>`+
                     `<span class="tdim">${b.binDays === 1 ? start : `${start} to ${end}`}</span>`;
     const wrap = tip.parentElement.getBoundingClientRect();
     tip.hidden = false;
@@ -822,17 +866,14 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
 
   ["f-track","f-frame","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
   document.querySelectorAll('input[name="pass"]').forEach(r=>r.addEventListener("change", applyFilters));
-  ["f-calval","f-blackout"].forEach(id=>{
-    const el = document.getElementById(id);
-    if (el) el.addEventListener("change", applyFilters);
-  });
+  document.getElementById("f-calval").addEventListener("change", applyFilters);
 
   document.getElementById("btn-clear-filters").addEventListener("click", ()=>{
     document.getElementById("f-track").value = "";
     document.getElementById("f-frame").value = "";
     document.getElementById("f-id").value = "";
     document.querySelector('input[name="pass"][value="all"]').checked = true;
-    ["f-calval","f-blackout"].forEach(id=>{ const el=document.getElementById(id); if (el) el.checked=false; });
+    document.getElementById("f-calval").checked = false;
     buildGslcChips();
     applyFilters();
   });
@@ -1249,6 +1290,143 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     if (plotBtn) plotBtn.addEventListener("click", ()=> showModeTimeline(p, granules));
   }
 
+  // ---------- GUNW view ----------
+  function gunwSummaryRows(p){
+    if (!p.gunw_count) return `<div class="pop-row">No GUNW interferograms in the catalog for this frame.</div>`;
+    const span = p.gunw_dt_max !== p.gunw_dt_min ? `${p.gunw_dt_min}&ndash;${p.gunw_dt_max}` : `${p.gunw_dt_min}`;
+    return `<div class="pop-row">GUNW interferograms: ${p.gunw_count} &middot; ${p.gunw_pairs} pair(s) &middot; mode ${asArray(p.gunw_modes).join(", ")}</div>`+
+           `<div class="pop-row">Temporal baselines: ${span} days &middot; ${asArray(p.gunw_pols).join(", ")}</div>`;
+  }
+
+  function gunwHoverHtml(p){
+    return `
+      <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
+      <div class="pop-row">Pass: ${p.passDirection}</div>
+      ${gunwSummaryRows(p)}
+      ${blackoutHoverLine(p)}
+      <div class="pop-row" style="color:var(--accent)">click to list interferograms &amp; select</div>`;
+  }
+
+  function gunwRowsHtml(ifgs){
+    return ifgs.map(g=>
+      `<div class="granule-row"><span class="gdate">${g.ref} &rarr; ${g.sec}</span> `+
+      `<span class="gmode">${g.dt} d</span> ${g.mode}_${g.cov} ${g.pol}<br>${g.gid}</div>`
+    ).join("");
+  }
+
+  function gunwPopupHtml(p){
+    const ifgs = asArray(p.gunw_ifgs);
+    const off = ifgs.length ? "" : " disabled";
+    return `
+      <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
+      <div class="pop-row">Pass: ${p.passDirection}</div>
+      ${gunwSummaryRows(p)}
+      ${blackoutDetailBlock(p)}
+      <div class="pop-actions">
+        <button class="btn small primary" id="pop-select">${selected.has(p.id) ? "Remove from selection" : "Add to selection"}</button>
+        <button class="btn small" id="pop-ifgs"${off}>Show interferograms (${ifgs.length})</button>
+        <button class="btn small" id="pop-csv"${off}>Export CSV</button>
+        <button class="btn small" id="pop-plot"${off}>Show plot</button>
+      </div>
+      <div id="pop-ifg-panel" hidden><div class="granule-list">${gunwRowsHtml(ifgs)}</div></div>`;
+  }
+
+  function gunwCsv(p, ifgs){
+    const rows = [["frame_id","track","frame","pass","ref_date","sec_date","temporal_baseline_days","mode","coverage","polarization","granule_id"]];
+    ifgs.forEach(g=> rows.push([p.frame_idx,p.track,p.frame,p.passDirection,g.ref,g.sec,g.dt,g.mode,g.cov,g.pol,g.gid]));
+    return toCsv(rows);
+  }
+
+  function wireGunwPopup(feature){
+    const p = feature.properties;
+    const ifgs = asArray(p.gunw_ifgs);
+    const selBtn = document.getElementById("pop-select");
+    if (selBtn) selBtn.addEventListener("click", ()=>{
+      toggleSelectFrame(feature);
+      selBtn.textContent = selected.has(p.id) ? "Remove from selection" : "Add to selection";
+    });
+    const listBtn = document.getElementById("pop-ifgs");
+    const panel = document.getElementById("pop-ifg-panel");
+    if (listBtn && panel) listBtn.addEventListener("click", ()=>{
+      panel.hidden = !panel.hidden;
+      listBtn.textContent = `${panel.hidden ? "Show" : "Hide"} interferograms (${ifgs.length})`;
+    });
+    const csvBtn = document.getElementById("pop-csv");
+    if (csvBtn) csvBtn.addEventListener("click", ()=>
+      downloadBlob(gunwCsv(p, ifgs), `nisar_gunw_${p.id}.csv`, "text/csv"));
+    const plotBtn = document.getElementById("pop-plot");
+    if (plotBtn) plotBtn.addEventListener("click", ()=> showGunwPlot(p, ifgs));
+  }
+
+  // Each pair is a segment from reference to secondary date, raised by its
+  // temporal baseline, so short and long pairs separate and gaps in the network
+  // show as dates no segment spans. Polarizations of one pair share a segment.
+  function gunwPlotSvg(ifgs, p){
+    const byPair = new Map();
+    ifgs.forEach(g=>{
+      const k = `${g.ref}|${g.sec}|${g.mode}_${g.cov}`;
+      if (!byPair.has(k)) byPair.set(k, {ta: Date.parse(`${g.ref}T00:00:00Z`), tb: Date.parse(`${g.sec}T00:00:00Z`),
+                                         key: `${g.mode}_${g.cov}`, ifg: g, group: []});
+      byPair.get(k).group.push(g);
+    });
+    chartPoints = Array.from(byPair.values()).filter(pt=>isFinite(pt.ta) && isFinite(pt.tb))
+      .sort((a,b)=>a.ta - b.ta || a.tb - b.tb);
+    if (!chartPoints.length) return `<div class="stat-line">No interferograms to plot.</div>`;
+
+    const padL = 52, padR = 24, padT = 12, padB = 30, H = 280;
+    const W = Math.min(720, Math.max(420, window.innerWidth - 140));
+    let [t0, t1] = spanWithBlackouts(p, Math.min(...chartPoints.map(pt=>pt.ta)), Math.max(...chartPoints.map(pt=>pt.tb)));
+    if (t1 === t0) { t0 -= 15 * DAY_MS; t1 += 15 * DAY_MS; }
+    const pad = (t1 - t0) * 0.03;
+    t0 -= pad; t1 += pad;
+    const dMax = Math.max(12, ...chartPoints.map(pt=>pt.ifg.dt)) * 1.1;
+    const xOf = t => padL + (t - t0) / (t1 - t0) * (W - padL - padR);
+    const yOf = d => H - padB - d / dMax * (H - padT - padB);
+
+    const {bands, blackoutWindows} = blackoutBands(p, t0, t1, xOf, padT, H - padB);
+    const xTicks = timeTicks(t0, t1).map(tk=>
+      `<line class="chart-grid" x1="${xOf(tk.t).toFixed(1)}" x2="${xOf(tk.t).toFixed(1)}" y1="${padT}" y2="${H-padB}" opacity="0.55"/>`+
+      `<text class="chart-tick" x="${xOf(tk.t).toFixed(1)}" y="${H-padB+14}" text-anchor="middle">${tk.label}</text>`
+    ).join("");
+    // Baseline ticks in multiples of NISAR's 12-day repeat.
+    const step = [12, 24, 48, 96, 192, 384].find(s=>dMax / s <= 6) || 768;
+    let yTicks = "";
+    for (let d = 0; d <= dMax; d += step) {
+      yTicks += `<line class="chart-grid" x1="${padL}" x2="${W-padR}" y1="${yOf(d).toFixed(1)}" y2="${yOf(d).toFixed(1)}"/>`+
+                `<text class="chart-tick" x="${padL-6}" y="${(yOf(d)+3.5).toFixed(1)}" text-anchor="end">${d}</text>`;
+    }
+    const axis = `<text class="chart-tick" transform="translate(12 ${(padT + H - padB) / 2}) rotate(-90)" text-anchor="middle">temporal baseline (days)</text>`;
+
+    const keys = uniqSorted(chartPoints.map(pt=>pt.key));
+    const colorOf = key => CHART_PALETTE[keys.indexOf(key) % CHART_PALETTE.length];
+    const segs = chartPoints.map((pt,i)=>{
+      const y = yOf(pt.ifg.dt).toFixed(1);
+      const xa = xOf(pt.ta).toFixed(1), xb = xOf(pt.tb).toFixed(1), c = colorOf(pt.key);
+      // End dots keep back-to-back pairs of one baseline from reading as one line.
+      return `<line class="chart-ifg" data-i="${i}" x1="${xa}" x2="${xb}" y1="${y}" y2="${y}" stroke="${c}"/>`+
+             `<circle class="chart-ifg-end" cx="${xa}" cy="${y}" r="3" fill="${c}"/>`+
+             `<circle class="chart-ifg-end" cx="${xb}" cy="${y}" r="3" fill="${c}"/>`;
+    }).join("");
+    const legend = keys.map(k=>`<span style="color:${colorOf(k)}">&#9644;</span> ${k}`)
+      .concat(blackoutWindows.length ? [`<span style="color:#8c8c8c">&#9632;</span> blackout (${p.blackout_label})`] : [])
+      .join(" &middot; ");
+
+    return `<svg id="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="GUNW interferograms by temporal baseline">${bands}${xTicks}${yTicks}${axis}${segs}</svg>`+
+      `<div class="chart-sub">${legend}</div>`;
+  }
+
+  function showGunwPlot(p, ifgs){
+    document.getElementById("chart-title").textContent =
+      `Frame ${p.frame_idx} (Track ${p.track} / Frame ${p.frame}) - interferograms by temporal baseline`;
+    const refs = ifgs.map(g=>g.ref).sort(), secs = ifgs.map(g=>g.sec).sort();
+    document.getElementById("chart-sub").textContent = ifgs.length
+      ? `${p.gunw_pairs} pair(s), ${ifgs.length} GUNW granules - ${refs[0]} to ${secs[secs.length-1]}`
+      : "No GUNW interferograms";
+    document.getElementById("chart-body").innerHTML = gunwPlotSvg(ifgs, p);
+    document.getElementById("chart-modal").hidden = false;
+  }
+
   // ---------- acquisition timeline: mode (y) vs. acquisition date (x) ----------
   // Categorical steps chosen for the dark panel surface; adjacent pairs clear the
   // colour-vision-deficiency separation floor. Every row is also directly
@@ -1293,6 +1471,50 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
 
   const DUP_ROW = "duplicates";
 
+  function blackoutWindowsOf(p){
+    return (p && p.has_blackout ? asArray(p.blackout_ranges) : []).map(r=>{
+      const [a, b] = String(r).split("->").map(s=>s.trim());
+      return {a, b, ta: Date.parse(`${a}T00:00:00Z`), tb: Date.parse(`${b}T23:59:59Z`)};
+    }).filter(w=>isFinite(w.ta) && isFinite(w.tb));
+  }
+
+  // First and last date anywhere in the archive the page carries.
+  let archiveSpan = null;
+  function archiveBounds(){
+    if (!archiveSpan) {
+      let lo = Infinity, hi = -Infinity;
+      const see = d=>{ const t = Date.parse(`${d}T00:00:00Z`); if (isFinite(t)) { lo = Math.min(lo, t); hi = Math.max(hi, t); } };
+      FRAME_DATA.features.forEach(f=>{
+        asArray(f.properties.granules).forEach(g=>see(g.date));
+        asArray(f.properties.gunw_ifgs).forEach(g=>{ see(g.ref); see(g.sec); });
+      });
+      archiveSpan = [lo, hi];
+    }
+    return archiveSpan;
+  }
+
+  // Widen a plot's span to take in the frame's blackout windows, so a season the
+  // frame was never imaged in still shows -- but only within the archive's dates.
+  function spanWithBlackouts(p, t0, t1){
+    const [lo, hi] = archiveBounds();
+    blackoutWindowsOf(p).forEach(w=>{
+      const a = Math.max(w.ta, lo), b = Math.min(w.tb, hi);
+      if (a < b) { t0 = Math.min(t0, a); t1 = Math.max(t1, b); }
+    });
+    return [t0, t1];
+  }
+
+  // A frame's blackout windows as gray bands behind a plot, clipped to its span.
+  function blackoutBands(p, t0, t1, xOf, yTop, yBottom){
+    const blackoutWindows = blackoutWindowsOf(p).filter(w=>w.tb > t0 && w.ta < t1);
+    const bands = blackoutWindows.map(w=>{
+      const x0 = xOf(Math.max(w.ta, t0)), x1 = xOf(Math.min(w.tb, t1));
+      return `<rect class="chart-blackout" x="${x0.toFixed(1)}" y="${yTop}" width="${(x1 - x0).toFixed(1)}" `+
+             `height="${yBottom - yTop}"><title>Blackout ${w.a} to ${w.b}</title></rect>`;
+    }).join("");
+    return {bands, blackoutWindows};
+  }
+
   function modeTimelineSvg(granules, p){
     chartPoints = granules.filter(g=>g.date).map(g=>({
       t: Date.parse(`${g.date}T00:00:00Z`), key: `${g.mode}_${g.cov}`, dir: g.dir, g
@@ -1323,23 +1545,14 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     const padL = 96, padR = 24, padT = 10, padB = 30, rowH = 34;
     const W = Math.min(720, Math.max(420, window.innerWidth - 140));
     const H = padT + rows.length * rowH + padB;
-    let t0 = chartPoints[0].t, t1 = chartPoints[chartPoints.length-1].t;
+    let [t0, t1] = spanWithBlackouts(p, chartPoints[0].t, chartPoints[chartPoints.length-1].t);
     if (t1 === t0) { t0 -= 15 * DAY_MS; t1 += 15 * DAY_MS; }
     const pad = (t1 - t0) * 0.03;
     t0 -= pad; t1 += pad;
     const xOf = t => padL + (t - t0) / (t1 - t0) * (W - padL - padR);
     const yOf = key => padT + rows.indexOf(key) * rowH + rowH / 2;
 
-    // Blackout windows as gray bands behind everything, clipped to the plotted span.
-    const blackoutWindows = (p && p.has_blackout ? asArray(p.blackout_ranges) : []).map(r=>{
-      const [a, b] = String(r).split("->").map(s=>s.trim());
-      return {a, b, ta: Date.parse(`${a}T00:00:00Z`), tb: Date.parse(`${b}T23:59:59Z`)};
-    }).filter(w=>isFinite(w.ta) && isFinite(w.tb) && w.tb > t0 && w.ta < t1);
-    const bands = blackoutWindows.map(w=>{
-      const x0 = xOf(Math.max(w.ta, t0)), x1 = xOf(Math.min(w.tb, t1));
-      return `<rect class="chart-blackout" x="${x0.toFixed(1)}" y="${padT}" width="${(x1 - x0).toFixed(1)}" `+
-             `height="${H - padT - padB}"><title>Blackout ${w.a} to ${w.b}</title></rect>`;
-    }).join("");
+    const {bands, blackoutWindows} = blackoutBands(p, t0, t1, xOf, padT, H - padB);
 
     const ticks = timeTicks(t0, t1).map(tk=>
       `<line class="chart-grid" x1="${xOf(tk.t).toFixed(1)}" x2="${xOf(tk.t).toFixed(1)}" y1="${padT}" y2="${H-padB}" opacity="0.55"/>`+
@@ -1398,10 +1611,14 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   const chartTip = document.getElementById("chart-tip");
   document.getElementById("chart-body").addEventListener("mousemove", (e)=>{
     // Ascending dots are circles and descending ones polygons, so match the class.
-    const dot = e.target.closest ? e.target.closest(".chart-dot[data-i]") : null;
+    const dot = e.target.closest ? e.target.closest(".chart-dot[data-i], .chart-ifg[data-i]") : null;
     if (!dot) { chartTip.hidden = true; return; }
     const pt = chartPoints[Number(dot.dataset.i)];
-    if (pt.group) {
+    if (pt.ifg) {
+      chartTip.innerHTML = `<b>${pt.ifg.ref} &rarr; ${pt.ifg.sec}</b> &middot; ${pt.ifg.dt} days<br>`+
+        `<span class="tdim">${pt.key} &middot; ${pt.group.map(g=>g.pol).join(", ")}</span><br>`+
+        pt.group.map(g=>`<span class="tdim">${g.gid}</span>`).join("<br>");
+    } else if (pt.group) {
       chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.modeKey} &middot; ${pt.group.length} granules<br>`+
         pt.group.map(g=>`<span class="tdim">${g.pol} &middot; ${DIR_LABEL[g.dir] || g.dir} &middot; ${g.gid}</span>`).join("<br>");
     } else {
@@ -1415,7 +1632,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     // Unhide first: a display:none tip measures 0 wide and would defeat the clamp.
     chartTip.hidden = false;
     const card = chartTip.parentElement.getBoundingClientRect();
-    chartTip.style.left = `${Math.min(e.clientX - card.left + 12, card.width - chartTip.offsetWidth - 8)}px`;
+    chartTip.style.left = `${Math.max(8, Math.min(e.clientX - card.left + 12, card.width - chartTip.offsetWidth - 8))}px`;
     chartTip.style.top = `${e.clientY - card.top + 14}px`;
   });
   document.getElementById("chart-body").addEventListener("mouseleave", ()=>{ chartTip.hidden = true; });
@@ -1479,7 +1696,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
           map.queryRenderedFeatures(e.point, {layers:["gps-points"]}).length) { popup.remove(); return; }
       cancelHoverClose();
       const p = e.features[0].properties;
-      popup.setLngLat(e.lngLat).setHTML(`
+      popup.setLngLat(e.lngLat).setHTML(product === "gunw" ? gunwHoverHtml(p) : `
         <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
         <div class="pop-row">Pass: ${p.passDirection} &middot; ${p.cons_mode}${p.cons_cov!=="none"?"_"+p.cons_cov:""}</div>
         <div class="pop-row">GSLC in CMR: ${p.gslc_count} &middot; ${p.n_modes} mode(s)</div>
@@ -1559,9 +1776,37 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       openFramePopup(feature, e.lngLat);
     });
     openFramePopup = (feature, lngLat)=>{
+      if (product === "gunw") {
+        clickPopup.setLngLat(lngLat).setHTML(gunwPopupHtml(feature.properties)).addTo(map);
+        wireGunwPopup(feature);
+        return;
+      }
       clickPopup.setLngLat(lngLat).setHTML(granulePopupHtml(feature.properties)).addTo(map);
       wireGranulePopup(feature);
     };
+  });
+
+  // ---------- GSLC / GUNW switch ----------
+  // GUNW mode recolours the frames by interferogram count, turns the Mode /
+  // Polarization chips and the over-time chart to GUNW, and routes the hover,
+  // popup, CSV and plot to the frame's interferograms. The GSLC colour-by is
+  // restored on return.
+  let gslcColorBy = "gslc_count";
+  document.getElementById("product-ctrl").addEventListener("click", (e)=>{
+    const btn = e.target.closest("[data-product]");
+    if (!btn || btn.dataset.product === product) return;
+    product = btn.dataset.product;
+    document.querySelectorAll("#product-ctrl [data-product]").forEach(b=>b.classList.toggle("active", b === btn));
+    const sel = document.getElementById("color-by");
+    if (product === "gunw") { gslcColorBy = sel.value; sel.value = "gunw_count"; }
+    else if (sel.value === "gunw_count") sel.value = gslcColorBy;
+    renderChips();
+    applyFilters();          // re-filters on this product's chips and recolours
+    document.querySelectorAll(".maplibregl-popup").forEach(el=>el.remove());
+    hideModeTimeline();
+    document.getElementById("top-hint").innerHTML = product === "gunw"
+      ? "Click a frame to list interferograms &amp; select &middot; the (i) button toggles hover summaries"
+      : "Click a frame to list granules &amp; select &middot; the (i) button toggles hover summaries";
   });
 
   // ---------- search: place, coordinates, or frame ----------

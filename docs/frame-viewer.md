@@ -44,6 +44,14 @@ it with its `x`. **GSLC Acquisitions Over Time**, at the top of the sidebar,
 counts granules by acquisition date across the frames currently shown — binning
 to weeks or months as the span grows — and takes a start/end date of its own.
 
+When the viewer is built with a GUNW catalog, a **GSLC / GUNW** switch sits at
+the top left. GUNW colours the frames by interferogram count and turns the hover
+summary, popup, CSV export and **Show plot** over to the frame's interferograms:
+the plot draws each pair as a segment from reference to secondary date, raised
+by its temporal baseline, over the frame's blackout windows. The over-time chart
+counts interferograms by secondary date, and the **Mode / Polarization** chips
+list GUNW modes and polarizations; each product keeps its own chip selection.
+
 Pass direction and a **Frame popup** switch sit in the top-left map controls
 (clicking a GPS site never opens the frame panel underneath it); basemaps (light, dark, Esri
 satellite, Google hybrid as *Satellite-H*) in the top-right; the light/dark

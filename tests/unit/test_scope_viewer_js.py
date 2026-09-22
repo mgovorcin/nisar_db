@@ -30,6 +30,7 @@ const DIR_LABEL = {A: "Ascending", D: "Descending"};
 const window = {innerWidth: 900};
 let chartPoints = [];
 let modeKeyOrder = null;
+let archiveSpan = null;
 """
 
 GRANULES = [
@@ -105,6 +106,10 @@ CHART = [
     "modeKeys",
     "modeColor",
     "timeTicks",
+    "blackoutWindowsOf",
+    "archiveBounds",
+    "spanWithBlackouts",
+    "blackoutBands",
     "modeTimelineSvg",
 ]
 LANES = (
@@ -181,3 +186,109 @@ def test_plot_shades_blackout_windows_clipped_to_the_plotted_span() -> None:
         " none: none.includes('chart-blackout')};",
     )
     assert result == {"bands": 1, "legend": True, "none": False}
+
+
+IFGS = [
+    {
+        "ref": "2025-11-01",
+        "sec": "2025-11-13",
+        "dt": 12,
+        "mode": "2000",
+        "cov": "F",
+        "pol": "HH",
+        "gid": "i1",
+    },
+    {
+        "ref": "2025-11-01",
+        "sec": "2025-11-13",
+        "dt": 12,
+        "mode": "2000",
+        "cov": "F",
+        "pol": "HV",
+        "gid": "i2",
+    },
+    {
+        "ref": "2025-11-13",
+        "sec": "2025-12-07",
+        "dt": 24,
+        "mode": "2000",
+        "cov": "F",
+        "pol": "HH",
+        "gid": "i3",
+    },
+]
+
+
+def test_gunw_plot_draws_one_segment_per_pair_over_blackouts() -> None:
+    result = run_js(
+        [
+            "uniqSorted",
+            "asArray",
+            "timeTicks",
+            "blackoutWindowsOf",
+            "archiveBounds",
+            "spanWithBlackouts",
+            "blackoutBands",
+            "gunwPlotSvg",
+        ],
+        f"const IFGS = {json.dumps(IFGS)};"
+        " const p = {has_blackout: true, blackout_label: 'Nov-Nov',"
+        " blackout_ranges: ['2025-11-20 -> 2025-11-30']};"
+        " const svg = gunwPlotSvg(IFGS, p);"
+        ' return {segments: (svg.match(/class="chart-ifg"/g) || []).length,'
+        ' bands: (svg.match(/class="chart-blackout"/g) || []).length,'
+        " pols: chartPoints.map(pt => pt.group.map(g => g.pol))};",
+    )
+    assert result == {"segments": 2, "bands": 1, "pols": [["HH", "HV"], ["HH"]]}
+
+
+def test_gunw_csv_has_one_row_per_granule() -> None:
+    csv = run_js(
+        ["toCsv", "gunwCsv"],
+        f"const IFGS = {json.dumps(IFGS)};"
+        " return gunwCsv({frame_idx: 7, track: 1, frame: 4,"
+        " passDirection: 'Ascending'}, IFGS);",
+    )
+    lines = csv.strip().splitlines()
+    assert lines[0].startswith('"frame_id","track","frame","pass","ref_date"')
+    assert len(lines) == 4
+    assert lines[1].split(",")[4:7] == ['"2025-11-01"', '"2025-11-13"', '"12"']
+
+
+def test_gunw_count_follows_the_gunw_chips() -> None:
+    frames = [{"properties": {"gunw_ifgs": IFGS}}]
+    counts = run_js(
+        ["asArray", "updateSelectedGunwCounts"],
+        "globalThis.activeChips = {gunwMode: new Set(), gunwPol: new Set()};"
+        " const n = () => (updateSelectedGunwCounts(),"
+        " FRAME_DATA.features[0].properties.gunw_count_sel);"
+        " const all = n(); activeChips.gunwPol.add('HV'); const hv = n();"
+        " activeChips.gunwPol.clear(); activeChips.gunwMode.add('4000');"
+        " return [all, hv, n()];",
+        frames,
+    )
+    assert counts == [3, 1, 0]
+
+
+def test_plot_widens_to_a_blackout_before_the_first_acquisition() -> None:
+    # The frame was only imaged in summer; its winter blackout falls inside the
+    # archive, so the plot must reach back far enough to show it.
+    frames = [
+        {"properties": {"granules": [{"date": "2025-10-01"}, {"date": "2026-09-01"}]}}
+    ]
+    summer = [
+        dict(g, date=d)
+        for g, d in zip(GRANULES, ["2026-06-20", "2026-07-02", "2026-08-01"])
+    ]
+    result = run_js(
+        ["parseGranules", *CHART],
+        f"const SUMMER = {json.dumps(summer)};"
+        " const p = {has_blackout: true, blackout_label: 'Nov-Apr', blackout_ranges:"
+        " ['2025-11-12 -> 2026-04-22', '2026-11-12 -> 2027-04-22']};"
+        " const svg = modeTimelineSvg(SUMMER, p);"
+        ' return {bands: (svg.match(/class="chart-blackout"/g) || []).length,'
+        ' x: Number(svg.match(/class="chart-blackout" x="([0-9.]+)/)[1])};',
+        frames,
+    )
+    assert result["bands"] == 1  # the 2026-27 window lies past the archive
+    assert result["x"] < 200  # the band sits at the left, before the data
