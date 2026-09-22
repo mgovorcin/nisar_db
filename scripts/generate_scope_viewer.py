@@ -1540,14 +1540,18 @@ APP_JS = r"""
     version: 8,
     projection: {type: "globe"},   // read at style load; the GlobeControl toggles from here
     sources: {
-      "carto-light": { type:"raster", tiles:["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png","https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png","https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"], tileSize:256, attribution:"&copy; OpenStreetMap &copy; CARTO" },
-      "carto-dark": { type:"raster", tiles:["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png","https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png","https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"], tileSize:256, attribution:"&copy; OpenStreetMap &copy; CARTO" },
+      "esri-light": { type:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"], tileSize:256, maxzoom:16, attribution:"Esri, HERE, Garmin, &copy; OpenStreetMap contributors" },
+      "esri-light-ref": { type:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}"], tileSize:256, maxzoom:16, attribution:"Esri, HERE, Garmin, &copy; OpenStreetMap contributors" },
+      "esri-dark": { type:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"], tileSize:256, maxzoom:16, attribution:"Esri, HERE, Garmin, &copy; OpenStreetMap contributors" },
+      "esri-dark-ref": { type:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"], tileSize:256, maxzoom:16, attribution:"Esri, HERE, Garmin, &copy; OpenStreetMap contributors" },
       "esri-sat": { type:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], tileSize:256, attribution:"Esri World Imagery" },
       "google-hybrid": { type:"raster", tiles:["https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"], tileSize:256, attribution:"Google" }
     },
     layers: [
-      { id:"bm-light", type:"raster", source:"carto-light", layout:{visibility:"visible"} },
-      { id:"bm-dark", type:"raster", source:"carto-dark", layout:{visibility:"none"} },
+      { id:"bm-light", type:"raster", source:"esri-light", layout:{visibility:"visible"} },
+      { id:"bm-light-ref", type:"raster", source:"esri-light-ref", layout:{visibility:"visible"} },
+      { id:"bm-dark", type:"raster", source:"esri-dark", layout:{visibility:"none"} },
+      { id:"bm-dark-ref", type:"raster", source:"esri-dark-ref", layout:{visibility:"none"} },
       { id:"bm-sat", type:"raster", source:"esri-sat", layout:{visibility:"none"} },
       { id:"bm-sat2", type:"raster", source:"google-hybrid", layout:{visibility:"none"} }
     ]
@@ -1590,11 +1594,12 @@ APP_JS = r"""
   map.addControl(hoverInfoControl, "bottom-right");
   map.addControl(new maplibregl.GlobeControl(), "bottom-right");
 
-  const BASEMAP_LAYERS = {light:"bm-light", dark:"bm-dark", sat:"bm-sat", sat2:"bm-sat2"};
+  // Each basemap is one or more stacked layers (the Esri canvases keep labels separate).
+  const BASEMAP_LAYERS = {light:["bm-light","bm-light-ref"], dark:["bm-dark","bm-dark-ref"], sat:["bm-sat"], sat2:["bm-sat2"]};
   document.querySelectorAll('input[name="basemap"]').forEach(r=>{
     r.addEventListener("change", ()=>{
-      Object.entries(BASEMAP_LAYERS).forEach(([value, layer])=>
-        map.setLayoutProperty(layer, "visibility", value === r.value ? "visible" : "none"));
+      Object.entries(BASEMAP_LAYERS).forEach(([value, layers])=> layers.forEach(layer=>
+        map.setLayoutProperty(layer, "visibility", value === r.value ? "visible" : "none")));
     });
   });
 
