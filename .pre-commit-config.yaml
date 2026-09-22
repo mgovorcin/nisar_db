@@ -6,8 +6,9 @@ ci:
 default_install_hook_types: [pre-commit, pre-push]
 
 # Experimental notebooks / scratch scripts are not part of the package and
-# are not held to the package's lint/type standards.
-exclude: ^notebooks/
+# are not held to the package's lint/type standards. catalog/ is machine-written
+# by the daily catalog Action, which would undo any hook fix on its next run.
+exclude: ^(notebooks|catalog)/
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
