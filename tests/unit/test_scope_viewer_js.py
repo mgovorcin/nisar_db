@@ -229,6 +229,7 @@ def test_gunw_plot_draws_one_segment_per_pair_over_blackouts() -> None:
             "archiveBounds",
             "spanWithBlackouts",
             "blackoutBands",
+            "gunwNetwork",
             "gunwPlotSvg",
         ],
         f"const IFGS = {json.dumps(IFGS)};"
@@ -292,3 +293,77 @@ def test_plot_widens_to_a_blackout_before_the_first_acquisition() -> None:
     )
     assert result["bands"] == 1  # the 2026-27 window lies past the archive
     assert result["x"] < 200  # the band sits at the left, before the data
+
+
+GUNW_CHART = [
+    "uniqSorted",
+    "asArray",
+    "timeTicks",
+    "blackoutWindowsOf",
+    "archiveBounds",
+    "spanWithBlackouts",
+    "blackoutBands",
+    "gunwNetwork",
+    "gunwPlotSvg",
+]
+
+
+def _pair(ref: str, sec: str) -> str:
+    return f"{{ta: Date.parse('{ref}T00:00:00Z'), tb: Date.parse('{sec}T00:00:00Z')}}"
+
+
+@pytest.mark.parametrize(
+    ("pairs", "expected"),
+    [
+        # a daisy chain: one piece, no gap
+        ([("2025-11-01", "2025-11-13"), ("2025-11-13", "2025-11-25")], [1, 0]),
+        # a missing link: two pieces split by a gap no pair bridges
+        ([("2025-11-01", "2025-11-13"), ("2025-11-25", "2025-12-07")], [2, 1]),
+        # a long pair spans the missing link, so the chain holds
+        (
+            [
+                ("2025-11-01", "2025-11-13"),
+                ("2025-11-25", "2025-12-07"),
+                ("2025-11-13", "2025-11-25"),
+            ],
+            [1, 0],
+        ),
+        # two chains that interleave in time: two pieces but no gap to shade
+        ([("2025-11-01", "2025-11-25"), ("2025-11-13", "2025-12-07")], [2, 0]),
+    ],
+)
+def test_gunw_network_finds_pieces_and_gaps(pairs: list, expected: list) -> None:
+    js_pairs = "[" + ", ".join(_pair(a, b) for a, b in pairs) + "]"
+    result = run_js(
+        ["gunwNetwork"],
+        f"const net = gunwNetwork({js_pairs});"
+        " return [net.components, net.breaks.length];",
+    )
+    assert result == expected
+
+
+def test_gunw_plot_marks_the_gap_and_the_cut_off_pairs() -> None:
+    def ifg(ref: str, sec: str) -> dict:
+        return {
+            "ref": ref,
+            "sec": sec,
+            "dt": 12,
+            "mode": "4000",
+            "cov": "F",
+            "pol": "SH",
+            "gid": ref,
+        }
+
+    ifgs = [
+        ifg("2025-11-01", "2025-11-13"),
+        ifg("2025-11-25", "2025-12-07"),
+        ifg("2025-12-07", "2025-12-19"),
+    ]
+    result = run_js(
+        GUNW_CHART,
+        f"const svg = gunwPlotSvg({json.dumps(ifgs)}, {{}});"
+        ' return {gaps: (svg.match(/class="chart-gap"/g) || []).length,'
+        ' halos: (svg.match(/class="chart-ifg-off"/g) || []).length};',
+    )
+    # the lone first pair is the cut-off piece; the two-pair chain is the main one
+    assert result == {"gaps": 1, "halos": 1}

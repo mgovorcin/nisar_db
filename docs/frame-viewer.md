@@ -48,7 +48,9 @@ When the viewer is built with a GUNW catalog, a **GSLC / GUNW** switch sits at
 the top left. GUNW colours the frames by interferogram count and turns the hover
 summary, popup, CSV export and **Show plot** over to the frame's interferograms:
 the plot draws each pair as a segment from reference to secondary date, raised
-by its temporal baseline, over the frame's blackout windows. The over-time chart
+by its temporal baseline, over the frame's blackout windows. When the pairs do
+not form one connected network, the subtitle says so in red, spans no pair
+bridges are shaded red, and pairs cut off from the main network get a red halo. The over-time chart
 counts interferograms by secondary date, and the **Mode / Polarization** chips
 list GUNW modes and polarizations; each product keeps its own chip selection.
 
