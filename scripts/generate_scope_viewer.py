@@ -829,6 +829,9 @@ APP_CSS = r"""
   .chart-ifg{stroke-width:3;stroke-linecap:round;cursor:pointer;}
   .chart-ifg:hover{stroke-width:5;}
   .chart-ifg-end{pointer-events:none;stroke:var(--panel);stroke-width:1;}
+  .chart-gap{fill:#e5484d;fill-opacity:.16;stroke:#e5484d;stroke-width:1;stroke-dasharray:4 3;}
+  .chart-warn{color:#e5484d;font-weight:600;}
+  .chart-ifg-off{stroke:#e5484d;stroke-opacity:.45;stroke-width:10;stroke-linecap:round;pointer-events:none;}
   .chart-tip{position:absolute;pointer-events:none;background:var(--inset);border:1px solid var(--border);border-radius:5px;
     padding:5px 7px;font-size:11px;color:var(--text);white-space:nowrap;z-index:2;}
   .chart-tip[hidden]{display:none;}
@@ -1981,6 +1984,29 @@ APP_JS = r"""
     if (plotBtn) plotBtn.addEventListener("click", ()=> showGunwPlot(p, ifgs));
   }
 
+  // A frame's interferogram network: acquisition dates are nodes, pairs are
+  // edges. ``components`` counts the pieces it falls into; ``breaks`` are the
+  // spans between consecutive dates that no pair bridges, where a time series
+  // built from these interferograms would come apart; ``offMain(t)`` says whether
+  // a date lies outside the largest piece.
+  function gunwNetwork(pairs){
+    const parent = new Map();
+    const find = x=>{ while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+    pairs.forEach(pt=>[pt.ta, pt.tb].forEach(t=>{ if (!parent.has(t)) parent.set(t, t); }));
+    pairs.forEach(pt=>{ const a = find(pt.ta), b = find(pt.tb); if (a !== b) parent.set(a, b); });
+    const dates = Array.from(parent.keys()).sort((a,b)=>a - b);
+    const breaks = [];
+    for (let i = 0; i < dates.length - 1; i++) {
+      const lo = dates[i], hi = dates[i+1];
+      if (!pairs.some(pt=>pt.ta <= lo && pt.tb >= hi)) breaks.push([lo, hi]);
+    }
+    const size = new Map();
+    dates.forEach(d=>{ const r = find(d); size.set(r, (size.get(r) || 0) + 1); });
+    let main = null;
+    size.forEach((n, r)=>{ if (main === null || n > size.get(main)) main = r; });
+    return {components: size.size, breaks, nDates: dates.length, offMain: t=>parent.has(t) && find(t) !== main};
+  }
+
   // Each pair is a segment from reference to secondary date, raised by its
   // temporal baseline, so short and long pairs separate and gaps in the network
   // show as dates no segment spans. Polarizations of one pair share a segment.
@@ -2022,20 +2048,31 @@ APP_JS = r"""
 
     const keys = uniqSorted(chartPoints.map(pt=>pt.key));
     const colorOf = key => CHART_PALETTE[keys.indexOf(key) % CHART_PALETTE.length];
+    const net = gunwNetwork(chartPoints);
     const segs = chartPoints.map((pt,i)=>{
       const y = yOf(pt.ifg.dt).toFixed(1);
       const xa = xOf(pt.ta).toFixed(1), xb = xOf(pt.tb).toFixed(1), c = colorOf(pt.key);
-      // End dots keep back-to-back pairs of one baseline from reading as one line.
-      return `<line class="chart-ifg" data-i="${i}" x1="${xa}" x2="${xb}" y1="${y}" y2="${y}" stroke="${c}"/>`+
+      // End dots keep back-to-back pairs of one baseline from reading as one line;
+      // a red halo marks pairs cut off from the main network.
+      const halo = net.offMain(pt.ta) ? `<line class="chart-ifg-off" x1="${xa}" x2="${xb}" y1="${y}" y2="${y}"/>` : "";
+      return halo + `<line class="chart-ifg" data-i="${i}" x1="${xa}" x2="${xb}" y1="${y}" y2="${y}" stroke="${c}"/>`+
              `<circle class="chart-ifg-end" cx="${xa}" cy="${y}" r="3" fill="${c}"/>`+
              `<circle class="chart-ifg-end" cx="${xb}" cy="${y}" r="3" fill="${c}"/>`;
     }).join("");
+    const fmt = t => new Date(t).toISOString().slice(0,10);
+    const gaps = net.breaks.map(([lo, hi])=>{
+      const x0 = xOf(lo), x1 = xOf(hi);
+      return `<rect class="chart-gap" x="${x0.toFixed(1)}" y="${padT}" width="${(x1 - x0).toFixed(1)}" height="${H - padT - padB}">`+
+             `<title>Network gap: no interferogram connects ${fmt(lo)} to ${fmt(hi)}</title></rect>`;
+    }).join("");
     const legend = keys.map(k=>`<span style="color:${colorOf(k)}">&#9644;</span> ${k}`)
       .concat(blackoutWindows.length ? [`<span style="color:#8c8c8c">&#9632;</span> blackout (${p.blackout_label})`] : [])
+      .concat(net.breaks.length ? [`<span style="color:#e5484d">&#9632;</span> network gap`] : [])
+      .concat(net.components > 1 ? [`<span style="color:#e5484d">&#9644;</span> cut off from the main network`] : [])
       .join(" &middot; ");
 
     return `<svg id="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="GUNW interferograms by temporal baseline">${bands}${xTicks}${yTicks}${axis}${segs}</svg>`+
+      aria-label="GUNW interferograms by temporal baseline">${bands}${gaps}${xTicks}${yTicks}${axis}${segs}</svg>`+
       `<div class="chart-sub">${legend}</div>`;
   }
 
@@ -2043,10 +2080,17 @@ APP_JS = r"""
     document.getElementById("chart-title").textContent =
       `Frame ${p.frame_idx} (Track ${p.track} / Frame ${p.frame}) - interferograms by temporal baseline`;
     const refs = ifgs.map(g=>g.ref).sort(), secs = ifgs.map(g=>g.sec).sort();
-    document.getElementById("chart-sub").textContent = ifgs.length
-      ? `${p.gunw_pairs} pair(s), ${ifgs.length} GUNW granules - ${refs[0]} to ${secs[secs.length-1]}`
-      : "No GUNW interferograms";
     document.getElementById("chart-body").innerHTML = gunwPlotSvg(ifgs, p);
+    const net = gunwNetwork(chartPoints);
+    // Interleaved pieces can overlap in time and leave no gap to shade, so the
+    // piece count is stated even when there is no break.
+    const status = net.components > 1
+      ? ` &middot; <span class="chart-warn">network disconnected: ${net.components} pieces`+
+        `${net.breaks.length ? `, ${net.breaks.length} gap(s)` : ""}</span>`
+      : (ifgs.length ? " &middot; network connected" : "");
+    document.getElementById("chart-sub").innerHTML = ifgs.length
+      ? `${p.gunw_pairs} pair(s), ${ifgs.length} GUNW granules - ${refs[0]} to ${secs[secs.length-1]}${status}`
+      : "No GUNW interferograms";
     document.getElementById("chart-modal").hidden = false;
   }
 
