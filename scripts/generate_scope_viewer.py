@@ -647,6 +647,18 @@ APP_CSS = r"""
   #click-ctrl{position:absolute;top:48px;left:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;}
   #click-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
+  #search{position:absolute;top:86px;left:10px;z-index:6;width:268px;}
+  #search input{width:100%;box-sizing:border-box;background:var(--scrim);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:6px 9px;font:inherit;font-size:11.5px;}
+  #search input:focus{outline:2px solid var(--accent);outline-offset:-1px;}
+  #search-results{margin-top:4px;background:var(--panel);border:1px solid var(--border);border-radius:6px;
+    max-height:260px;overflow-y:auto;box-shadow:0 4px 16px rgb(0 0 0 / .25);}
+  #search-results[hidden]{display:none;}
+  #search-results button{display:block;width:100%;text-align:left;background:none;border:none;
+    border-bottom:1px solid var(--hairline);color:var(--text);padding:6px 9px;cursor:pointer;font:inherit;font-size:11.5px;line-height:1.35;}
+  #search-results button:hover{background:var(--panel2);}
+  #search-results button small{display:block;color:var(--text-dim);font-size:10.5px;}
+  #search-results .msg{padding:6px 9px;color:var(--text-dim);font-size:11px;}
   #top-hint{position:absolute;bottom:24px;left:10px;background:var(--scrim);color:var(--text-dim);
     font-size:11.5px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);pointer-events:none;z-index:5;}
   #basemap-ctrl{position:absolute;top:10px;right:10px;background:var(--scrim);border:1px solid var(--border);
@@ -668,6 +680,7 @@ APP_CSS = r"""
   .granule-row{font-size:10.5px;color:var(--text-dim);padding:2px 0;border-bottom:1px solid var(--hairline);font-family:ui-monospace,Menlo,Consolas,monospace;}
   .granule-row .gdate{color:var(--text);}
   .granule-row .gmode{color:var(--accent2);}
+  .granule-row.dup-gid{padding-left:12px;}
   .day-bar{fill:var(--accent);}
   .day-bar:hover{fill:#b2daf7;}
   .day-base{stroke:var(--border);stroke-width:1;}
@@ -690,6 +703,7 @@ APP_CSS = r"""
   .chart-tick{fill:var(--text-dim);font-size:10px;}
   .chart-row-label{fill:var(--text);font-size:10.5px;font-family:ui-monospace,Menlo,Consolas,monospace;}
   .chart-grid{stroke:var(--border);stroke-width:1;}
+  .chart-blackout{fill:#8c8c8c;fill-opacity:.24;}
   .chart-dot{stroke:var(--panel);stroke-width:2;cursor:pointer;}
   .chart-dot:hover{stroke:#f5f5f5;}
   .chart-tip{position:absolute;pointer-events:none;background:var(--inset);border:1px solid var(--border);border-radius:5px;
@@ -852,6 +866,11 @@ BODY_HTML = r"""<body>
     </div>
     <div id="click-ctrl">
       <label><input type="checkbox" id="f-frame-popup" checked> Frame popup</label>
+    </div>
+    <div id="search">
+      <input id="search-q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Place, lat lon, frame id or T12_F34">
+      <div id="search-results" hidden></div>
     </div>
     <div id="top-hint">Click a frame to list granules &amp; select &middot; the (i) button toggles hover summaries</div>
     <div id="basemap-ctrl">
@@ -1557,6 +1576,7 @@ APP_JS = r"""
     ]
   };
 
+  let openFramePopup = null;   // set once the frame layers exist; used by the search box
   const map = new maplibregl.Map({
     container: "map",
     style: style,
@@ -1641,8 +1661,30 @@ APP_JS = r"""
            `&middot; ${p.n_duplicate} duplicate granule(s) on the same date &amp; mode</div>`;
   }
 
+  // Granules that share a date, mode and coverage -- the same key n_unique counts
+  // -- grouped so each repeated acquisition lists every granule delivered for it.
+  function duplicateGroups(granules){
+    const groups = new Map();
+    granules.forEach(g=>{
+      const key = `${g.date}|${g.mode}|${g.cov}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(g);
+    });
+    return Array.from(groups.values()).filter(gs=>gs.length > 1);
+  }
+
+  function duplicateRowsHtml(groups){
+    return groups.map(gs=>
+      `<div class="granule-row"><span class="gdate">${gs[0].date}</span> `+
+      `<span class="gmode">${gs[0].mode}_${gs[0].cov}</span> &middot; ${gs.length} granules</div>`+
+      gs.map(g=>`<div class="granule-row dup-gid">${g.pol} ${g.dir} c${g.cycle}<br>${g.gid}</div>`).join("")
+    ).join("");
+  }
+
   function granulePopupHtml(p){
     const granules = parseGranules(p);
+    const dupGroups = duplicateGroups(granules);
+    const nDup = dupGroups.reduce((n, gs)=>n + gs.length - 1, 0);
     const isSel = selected.has(p.id);
     const dirs = uniqSorted(granules.map(g=>g.dir));
     const dirChips = dirs.length > 1
@@ -1664,8 +1706,10 @@ APP_JS = r"""
         <button class="btn small" id="pop-granules"${granules.length ? "" : " disabled"}>Show granules (${granules.length})</button>
         <button class="btn small" id="pop-csv"${granules.length ? "" : " disabled"}>Export CSV</button>
         <button class="btn small" id="pop-plot"${granules.length ? "" : " disabled"}>Show plot</button>
+        ${nDup ? `<button class="btn small" id="pop-dups">Show duplicates (${nDup})</button>` : ""}
       </div>
-      <div id="pop-granule-panel" hidden>${dirChips}<div class="granule-list" id="pop-granule-list">${rows}</div></div>`;
+      <div id="pop-granule-panel" hidden>${dirChips}<div class="granule-list" id="pop-granule-list">${rows}</div></div>
+      ${nDup ? `<div id="pop-dup-panel" hidden><div class="granule-list">${duplicateRowsHtml(dupGroups)}</div></div>` : ""}`;
   }
 
   function granuleRowsHtml(granules){
@@ -1700,6 +1744,15 @@ APP_JS = r"""
       list.innerHTML = granuleRowsHtml(shown) ||
         `<div class="granule-row">No ${DIR_LABEL[dir] || dir} granules for this frame.</div>`;
     });
+    const dupBtn = document.getElementById("pop-dups");
+    const dupPanel = document.getElementById("pop-dup-panel");
+    if (dupBtn && dupPanel) {
+      const label = dupBtn.textContent.replace(/^Show /, "");
+      dupBtn.addEventListener("click", ()=>{
+        dupPanel.hidden = !dupPanel.hidden;
+        dupBtn.textContent = `${dupPanel.hidden ? "Show" : "Hide"} ${label}`;
+      });
+    }
     const csvBtn = document.getElementById("pop-csv");
     if (csvBtn) csvBtn.addEventListener("click", ()=>
       downloadBlob(granuleCsv(p, granules), `nisar_granules_${p.id}.csv`, "text/csv"));
@@ -1749,7 +1802,9 @@ APP_JS = r"""
     return ticks;
   }
 
-  function modeTimelineSvg(granules){
+  const DUP_ROW = "duplicates";
+
+  function modeTimelineSvg(granules, p){
     chartPoints = granules.filter(g=>g.date).map(g=>({
       t: Date.parse(`${g.date}T00:00:00Z`), key: `${g.mode}_${g.cov}`, dir: g.dir, g
     })).sort((a,b)=>a.t-b.t);
@@ -1761,7 +1816,21 @@ APP_JS = r"""
     chartPoints.forEach(pt=> stacks.set(`${pt.t}|${pt.key}`, (stacks.get(`${pt.t}|${pt.key}`) || 0) + 1));
     chartPoints.forEach(pt=> pt.stack = stacks.get(`${pt.t}|${pt.key}`));
 
+    // One extra lane repeats each stacked date & mode as a single dot, so the
+    // duplicates are visible at a glance rather than only in a tooltip.
     const rows = uniqSorted(chartPoints.map(pt=>pt.key));
+    const dupPoints = [];
+    const dupSeen = new Map();
+    chartPoints.filter(pt=>pt.stack > 1).forEach(pt=>{
+      const k = `${pt.t}|${pt.key}`;
+      if (!dupSeen.has(k)) {
+        dupSeen.set(k, {t: pt.t, key: DUP_ROW, modeKey: pt.key, dir: pt.dir, g: pt.g, stack: pt.stack, group: []});
+        dupPoints.push(dupSeen.get(k));
+      }
+      dupSeen.get(k).group.push(pt.g);
+    });
+    if (dupPoints.length) rows.push(DUP_ROW);
+    chartPoints = chartPoints.concat(dupPoints);
     const padL = 96, padR = 24, padT = 10, padB = 30, rowH = 34;
     const W = Math.min(720, Math.max(420, window.innerWidth - 140));
     const H = padT + rows.length * rowH + padB;
@@ -1771,6 +1840,17 @@ APP_JS = r"""
     t0 -= pad; t1 += pad;
     const xOf = t => padL + (t - t0) / (t1 - t0) * (W - padL - padR);
     const yOf = key => padT + rows.indexOf(key) * rowH + rowH / 2;
+
+    // Blackout windows as gray bands behind everything, clipped to the plotted span.
+    const blackoutWindows = (p && p.has_blackout ? asArray(p.blackout_ranges) : []).map(r=>{
+      const [a, b] = String(r).split("->").map(s=>s.trim());
+      return {a, b, ta: Date.parse(`${a}T00:00:00Z`), tb: Date.parse(`${b}T23:59:59Z`)};
+    }).filter(w=>isFinite(w.ta) && isFinite(w.tb) && w.tb > t0 && w.ta < t1);
+    const bands = blackoutWindows.map(w=>{
+      const x0 = xOf(Math.max(w.ta, t0)), x1 = xOf(Math.min(w.tb, t1));
+      return `<rect class="chart-blackout" x="${x0.toFixed(1)}" y="${padT}" width="${(x1 - x0).toFixed(1)}" `+
+             `height="${H - padT - padB}"><title>Blackout ${w.a} to ${w.b}</title></rect>`;
+    }).join("");
 
     const ticks = timeTicks(t0, t1).map(tk=>
       `<line class="chart-grid" x1="${xOf(tk.t).toFixed(1)}" x2="${xOf(tk.t).toFixed(1)}" y1="${padT}" y2="${H-padB}" opacity="0.55"/>`+
@@ -1785,7 +1865,7 @@ APP_JS = r"""
     // Circle = ascending, diamond = descending; shape carries the direction so it
     // survives the mode colouring and colour-vision deficiency alike.
     const dots = chartPoints.map((pt,i)=>{
-      const x = xOf(pt.t), y = yOf(pt.key), fill = modeColor(pt.key);
+      const x = xOf(pt.t), y = yOf(pt.key), fill = modeColor(pt.modeKey || pt.key);
       if (pt.dir === "D") {
         const r = 5.2;
         const pts = [[x, y-r],[x+r, y],[x, y+r],[x-r, y]].map(c=>c.map(v=>v.toFixed(1)).join(",")).join(" ");
@@ -1794,10 +1874,12 @@ APP_JS = r"""
       return `<circle class="chart-dot" data-i="${i}" cx="${x.toFixed(1)}" cy="${y}" r="4.5" fill="${fill}"/>`;
     }).join("");
     const shapeKey = uniqSorted(chartPoints.map(pt=>pt.dir)).map(d=>
-      d === "D" ? "&#9670; descending" : d === "A" ? "&#9679; ascending" : `? ${d}`).join(" &middot; ");
+      d === "D" ? "&#9670; descending" : d === "A" ? "&#9679; ascending" : `? ${d}`)
+      .concat(blackoutWindows.length ? [`<span style="color:#8c8c8c">&#9632;</span> blackout (${p.blackout_label})`] : [])
+      .join(" &middot; ");
 
     return `<svg id="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="GSLC acquisitions by mode over time">${ticks}${lanes}${dots}</svg>`+
+      aria-label="GSLC acquisitions by mode over time">${bands}${ticks}${lanes}${dots}</svg>`+
       `<div class="chart-sub">${shapeKey}</div>`;
   }
 
@@ -1809,7 +1891,7 @@ APP_JS = r"""
     document.getElementById("chart-sub").textContent = dated.length
       ? `${dated.length} GSLC granules${dup} - ${dated[0]} to ${dated[dated.length-1]}`
       : "No dated GSLC granules";
-    document.getElementById("chart-body").innerHTML = modeTimelineSvg(granules);
+    document.getElementById("chart-body").innerHTML = modeTimelineSvg(granules, p);
     document.getElementById("chart-modal").hidden = false;
   }
 
@@ -1830,12 +1912,17 @@ APP_JS = r"""
     const dot = e.target.closest ? e.target.closest(".chart-dot[data-i]") : null;
     if (!dot) { chartTip.hidden = true; return; }
     const pt = chartPoints[Number(dot.dataset.i)];
-    const stacked = pt.stack > 1
-      ? `<br><span class="tdim">${pt.stack} granules here (${pt.stack - 1} duplicate) - showing the top one</span>`
-      : "";
-    chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.key}<br>`+
-      `<span class="tdim">${pt.g.pol} &middot; ${DIR_LABEL[pt.dir] || pt.dir} &middot; cycle ${pt.g.cycle}</span><br>`+
-      `<span class="tdim">${pt.g.gid}</span>${stacked}`;
+    if (pt.group) {
+      chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.modeKey} &middot; ${pt.group.length} granules<br>`+
+        pt.group.map(g=>`<span class="tdim">${g.pol} &middot; ${DIR_LABEL[g.dir] || g.dir} &middot; ${g.gid}</span>`).join("<br>");
+    } else {
+      const stacked = pt.stack > 1
+        ? `<br><span class="tdim">${pt.stack} granules here (${pt.stack - 1} duplicate) - showing the top one</span>`
+        : "";
+      chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.key}<br>`+
+        `<span class="tdim">${pt.g.pol} &middot; ${DIR_LABEL[pt.dir] || pt.dir} &middot; cycle ${pt.g.cycle}</span><br>`+
+        `<span class="tdim">${pt.g.gid}</span>${stacked}`;
+    }
     // Unhide first: a display:none tip measures 0 wide and would defeat the clamp.
     chartTip.hidden = false;
     const card = chartTip.parentElement.getBoundingClientRect();
@@ -1980,9 +2067,146 @@ APP_JS = r"""
       if (!feature) return;
       cancelHoverClose();
       popup.remove();
-      clickPopup.setLngLat(e.lngLat).setHTML(granulePopupHtml(feature.properties)).addTo(map);
-      wireGranulePopup(feature);
+      openFramePopup(feature, e.lngLat);
     });
+    openFramePopup = (feature, lngLat)=>{
+      clickPopup.setLngLat(lngLat).setHTML(granulePopupHtml(feature.properties)).addTo(map);
+      wireGranulePopup(feature);
+    };
+  });
+
+  // ---------- search: place, coordinates, or frame ----------
+  // Coordinates and frames are answered from the page; only a place name costs a
+  // network call. Nominatim's usage policy is one request a second, so place
+  // lookups fire on Enter, are spaced by a timer, and are cached for the page.
+  const NOMINATIM = "https://nominatim.openstreetmap.org/search";
+  const MIN_GAP_MS = 1100;
+  const placeCache = new Map();
+  let lastQueryAt = 0;
+  const qEl = document.getElementById("search-q");
+  const resEl = document.getElementById("search-results");
+  const hideResults = ()=>{ resEl.hidden = true; resEl.innerHTML = ""; };
+  const showResults = html=>{ resEl.innerHTML = html; resEl.hidden = false; };
+  const escHtml = s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const flyToPoint = (lon, lat, zoom)=> map.flyTo({center:[lon, lat], zoom: zoom == null ? 8 : zoom, duration:1200});
+
+  function fitPlace(bbox, lon, lat){
+    // Nominatim gives [south, north, west, east] as strings. A point result has a
+    // zero-area box (fitBounds then silently does nothing), an antimeridian box
+    // arrives as west > east, and a continent-sized one is no better than not
+    // moving -- fly to the point in all three cases.
+    const [s, n, w, e] = bbox.map(Number);
+    const width = e - w, height = n - s;
+    if (!(isFinite(width) && isFinite(height)) || width < 0.002 || height < 0.002) return flyToPoint(lon, lat, 11);
+    if (w > e) return flyToPoint(lon, lat, 5);
+    if (width > 120 || height > 90) return flyToPoint(lon, lat, 4);
+    map.fitBounds([[w, s], [e, n]], {padding:80, duration:1200, maxZoom:11});
+  }
+
+  function parseCoords(text){
+    const m = text.match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (!m) return null;
+    const a = parseFloat(m[1]), b = parseFloat(m[2]);
+    // "lat lon" is how people write it; fall back to "lon lat" when only that fits.
+    if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return {lat:a, lon:b};
+    if (Math.abs(b) <= 90 && Math.abs(a) <= 180) return {lat:b, lon:a};
+    return null;
+  }
+
+  function matchFrames(text){
+    const q = text.trim().toLowerCase();
+    if (!q) return [];
+    const tf = q.match(/^t?(\d+)\s*[_ /]\s*f?(\d+)$/);
+    if (tf) {
+      const track = Number(tf[1]), frame = Number(tf[2]);
+      return FRAME_DATA.features.filter(f=>Number(f.properties.track)===track && Number(f.properties.frame)===frame).slice(0, 8);
+    }
+    if (!/^\d+$/.test(q)) return [];
+    return FRAME_DATA.features.filter(f=>String(f.properties.frame_idx).startsWith(q)).slice(0, 8);
+  }
+
+  function featureBounds(f){
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    const walk = c=>{
+      if (typeof c[0] === "number") { w = Math.min(w, c[0]); e = Math.max(e, c[0]); s = Math.min(s, c[1]); n = Math.max(n, c[1]); }
+      else c.forEach(walk);
+    };
+    walk(f.geometry.coordinates);
+    return [[w, s], [e, n]];
+  }
+
+  async function runSearch(text){
+    const coords = parseCoords(text);
+    if (coords) { hideResults(); flyToPoint(coords.lon, coords.lat, 9); return; }
+
+    const frames = matchFrames(text);
+    if (frames.length) {
+      showResults(frames.map(f=>{
+        const p = f.properties;
+        return `<button data-frame="${p.id}">Frame ${p.frame_idx}`+
+          `<small>Track ${p.track} / Frame ${p.frame} &middot; ${p.passDirection} &middot; ${p.gslc_count} GSLC granule(s)</small></button>`;
+      }).join(""));
+      return;
+    }
+
+    const key = text.trim().toLowerCase();
+    if (!key) { hideResults(); return; }
+    if (placeCache.has(key)) { renderPlaces(placeCache.get(key)); return; }
+    const wait = MIN_GAP_MS - (Date.now() - lastQueryAt);
+    if (wait > 0) await new Promise(r=>setTimeout(r, wait));
+    lastQueryAt = Date.now();
+    showResults(`<div class="msg">Searching&hellip;</div>`);
+    try {
+      const response = await fetch(`${NOMINATIM}?format=jsonv2&limit=6&q=${encodeURIComponent(text)}`,
+                                   {headers:{Accept:"application/json"}});
+      if (!response.ok) throw new Error(`Nominatim returned ${response.status}`);
+      const places = await response.json();
+      placeCache.set(key, places);
+      renderPlaces(places);
+    } catch (err) {
+      showResults(`<div class="msg">Place lookup failed (${escHtml(err.message)}). Coordinates and frame ids still work offline.</div>`);
+    }
+  }
+
+  function renderPlaces(places){
+    if (!places.length) { showResults(`<div class="msg">Nothing found.</div>`); return; }
+    showResults(places.map((pl, i)=>
+      `<button data-place="${i}">${escHtml(pl.name || pl.display_name)}<small>${escHtml(pl.display_name)}</small></button>`
+    ).join(""));
+    resEl.__places = places;
+  }
+
+  resEl.addEventListener("click", (ev)=>{
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.dataset.frame) {
+      const f = idToFeature(b.dataset.frame);
+      hideResults();
+      if (!f) return;
+      qEl.value = `Frame ${f.properties.frame_idx}`;
+      const bounds = featureBounds(f);
+      map.fitBounds(bounds, {padding:80, duration:1200, maxZoom:8});
+      if (openFramePopup) openFramePopup(f, [(bounds[0][0]+bounds[1][0])/2, (bounds[0][1]+bounds[1][1])/2]);
+      return;
+    }
+    const pl = (resEl.__places || [])[+b.dataset.place];
+    if (!pl) return;
+    const lon = parseFloat(pl.lon), lat = parseFloat(pl.lat);
+    if (pl.boundingbox) fitPlace(pl.boundingbox, lon, lat); else flyToPoint(lon, lat);
+    hideResults();
+    qEl.value = pl.name || pl.display_name;
+  });
+
+  qEl.addEventListener("keydown", (ev)=>{
+    if (ev.key === "Enter") { ev.preventDefault(); runSearch(qEl.value); }
+    if (ev.key === "Escape") { hideResults(); qEl.blur(); }
+  });
+  // Frames and coordinates are local, so answer those while typing; a place name
+  // waits for Enter so Nominatim is not hit on every keystroke.
+  qEl.addEventListener("input", ()=>{
+    const text = qEl.value;
+    if (!text.trim() || parseCoords(text)) { hideResults(); return; }
+    if (matchFrames(text).length) runSearch(text); else hideResults();
   });
 
   renderSelectedList();
