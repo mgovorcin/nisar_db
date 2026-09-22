@@ -173,7 +173,7 @@ def generate_catalog_json(conn, output_dir: str) -> None:
             ifgs[ifg_key]["granule_ids"].append(row["granule_id"])
 
     write_catalog_json(
-        output_dir, "gunw_interferograms.json", "interferograms", list(ifgs.values())
+        output_dir, "gunw_interferograms.json.gz", "interferograms", list(ifgs.values())
     )
 
     logger.info(f"Generated catalog JSON files in {output_dir}")

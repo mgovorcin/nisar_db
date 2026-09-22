@@ -41,7 +41,7 @@ jobs:
 
           # Check if there are changes to commit
           if [[ -n $(git status -s) ]]; then
-            git add catalog/*.json
+            git add -A catalog/
             git commit -m "Update NISAR catalog [skip ci]"
             git push
           else

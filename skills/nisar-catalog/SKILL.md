@@ -115,13 +115,13 @@ Both builders share one pipeline in
 - `gslc_tracks.json` — track → list of pass directions
 - `gslc_frames.json` — `T{track}_{dir}` → list of frames
 - `gslc_dates.json` — `T{track}_F{frame}_{dir}` → list of dates
-- `gslc_scenes.json` — per scene: id, track/frame/direction, date, per-polarization
+- `gslc_scenes.json.gz` (compact, gzipped) — per scene: id, track/frame/direction, date, per-polarization
   URLs, granule_ids
 
 ### GUNW JSON outputs
 - `gunw_tracks.json`, `gunw_frames.json` — same shape as GSLC
 - `gunw_pairs.json` — `T{track}_F{frame}_{dir}` → list of `{ref_date, sec_date, pair}`
-- `gunw_interferograms.json` — per ifg: scene_id, ref/sec date, per-polarization URLs
+- `gunw_interferograms.json.gz` (compact, gzipped) — per ifg: scene_id, ref/sec date, per-polarization URLs
 
 ## Running / updating the catalog
 

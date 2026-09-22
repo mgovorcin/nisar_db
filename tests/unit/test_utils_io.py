@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import zipfile
 from datetime import datetime
@@ -49,3 +50,14 @@ def test_write_catalog_json_stamps_generated_at(tmp_path: Path) -> None:
     assert "generated_at" in payload
     # generated_at must be an ISO-8601 timestamp.
     datetime.fromisoformat(payload["generated_at"])
+
+
+def test_write_catalog_json_gzips_gz_filenames(tmp_path: Path) -> None:
+    write_catalog_json(
+        tmp_path, "scenes.json.gz", "scenes", [{"scene_id": "T001_F004_A"}]
+    )
+    with gzip.open(tmp_path / "scenes.json.gz", "rt") as f:
+        payload = json.load(f)
+    assert payload["scenes"] == [{"scene_id": "T001_F004_A"}]
+    datetime.fromisoformat(payload["generated_at"])
+    assert not (tmp_path / "scenes.json").exists()

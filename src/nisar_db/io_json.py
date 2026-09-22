@@ -6,11 +6,14 @@ Two output conventions are used across the package:
   consistent-GSLC, blackout and reference-date artifacts), written by
   :func:`write_zipped_json`.
 - A single indented ``.json`` stamped with a ``generated_at`` field (the GSLC/
-  GUNW catalog JSONs), written by :func:`write_catalog_json`.
+  GUNW catalog JSONs), written by :func:`write_catalog_json`. The per-scene and
+  per-interferogram catalogs are written as compact ``.json.gz`` instead: plain,
+  they outgrow GitHub's 100 MB file limit.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -58,10 +61,18 @@ def write_zipped_json(
 
 
 def write_catalog_json(output_dir: str | Path, filename: str, key: str, value) -> None:
-    """Write ``{key: value, "generated_at": <utc-now>}`` to output_dir/filename."""
-    with (Path(output_dir) / filename).open("w") as f:
-        json.dump(
-            {key: value, "generated_at": datetime.now(timezone.utc).isoformat()},
-            f,
-            indent=2,
+    """Write ``{key: value, "generated_at": <utc-now>}`` to output_dir/filename.
+
+    A ``.gz`` filename is written as compact, gzip-compressed JSON; anything else
+    as indented plain JSON.
+    """
+    payload = {key: value, "generated_at": datetime.now(timezone.utc).isoformat()}
+    path = Path(output_dir) / filename
+    if path.suffix == ".gz":
+        # mtime=0 keeps the gzip header stable, so only content changes show in git.
+        path.write_bytes(
+            gzip.compress(json.dumps(payload, separators=(",", ":")).encode(), mtime=0)
         )
+        return
+    with path.open("w") as f:
+        json.dump(payload, f, indent=2)

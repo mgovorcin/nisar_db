@@ -259,13 +259,16 @@ The script generates the following JSON files:
   - `gslc_tracks.json`: List of all tracks and their pass directions
   - `gslc_frames.json`: List of all frames for each track
   - `gslc_dates.json`: List of all acquisition dates for each frame
-  - `gslc_scenes.json`: Detailed information about each GSLC scene
+  - `gslc_scenes.json.gz`: Detailed information about each GSLC scene (gzip-compressed)
 
 - **GUNW products**:
   - `gunw_tracks.json`: List of all tracks and their pass directions
   - `gunw_frames.json`: List of all frames for each track
   - `gunw_pairs.json`: List of all interferogram pairs for each frame
-  - `gunw_interferograms.json`: Detailed information about each interferogram
+  - `gunw_interferograms.json.gz`: Detailed information about each interferogram (gzip-compressed)
+
+The two per-product files are gzip-compressed because plain they exceed GitHub's
+100 MB file limit; read them with `json.load(gzip.open(path))`.
 
 The script also creates DuckDB databases (`gslc_catalog.duckdb` and `gunw_catalog.duckdb`) that can be used for efficient querying of the catalog.
 
