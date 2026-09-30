@@ -23,7 +23,9 @@ It is intentionally a design sibling of ``scripts/nisar_frame_viewer_v1.html``
   granule list, a per-frame granule CSV export, and a plot of observation mode
   against acquisition date,
 * a live "Consistent Mode Summary" panel aggregates the shown frames,
-* the solid-earth CalVal site boxes are dropped,
+* the solid-earth CalVal site boxes are dropped, and the CalVal frames are the
+  ascending and descending ones over the DISP-S1 validation sites and Mexico City
+  (``disp_s1_calval_sites.geojson``), not the GeoPackage's flag,
 * selected frames can be imported from a CSV, a GeoJSON, or a consistent-GSLC
   catalog JSON (the output of ``nisar-db create-consistent``), and
 * an optional blackout-dates JSON adds blackout-duration (months) coloring,
@@ -102,6 +104,14 @@ PARTIAL_DOMINANCE_THRESHOLD = 0.66
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 
+#: The DISP-S1 validation frames, plus the Mexico City basin as a fast-deforming
+#: area; the NISAR frames over them are the CalVal frames.
+CALVAL_SITES = Path(__file__).resolve().parent / "disp_s1_calval_sites.geojson"
+
+# A frame counts once it covers this share of a site: enough to keep the
+# neighbouring tracks a site straddles, not the frames that clip a corner.
+CALVAL_MIN_OVERLAP = 0.10
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -125,6 +135,40 @@ def load_frames(gpkg_path: Path) -> gpd.GeoDataFrame:
         gdf = gdf.to_crs(4326)
     gdf["direction"] = gdf["passDirection"].str[0]
     return gdf
+
+
+def flag_calval_frames(
+    gdf: gpd.GeoDataFrame,
+    sites: gpd.GeoDataFrame,
+    min_overlap: float = CALVAL_MIN_OVERLAP,
+) -> pd.Series:
+    """Flag the frames that cover the CalVal sites, ascending and descending.
+
+    Every frame covering at least ``min_overlap`` of a site is flagged, whatever
+    its track or pass direction.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        Frame polygons.
+    sites : geopandas.GeoDataFrame
+        CalVal site polygons, e.g. the DISP-S1 validation frames.
+    min_overlap : float
+        Smallest share of a site's area a frame must cover.
+
+    Returns
+    -------
+    pandas.Series
+        Boolean, indexed like ``gdf``.
+
+    """
+    # Overlap shares are area ratios, so they need an equal-area projection.
+    frames = gdf.to_crs("EPSG:6933")
+    flagged = pd.Series(False, index=gdf.index)
+    for site in sites.to_crs("EPSG:6933").geometry:
+        share = frames.geometry.intersection(site).area / site.area
+        flagged |= share >= min_overlap
+    return flagged
 
 
 #: Per-granule columns the viewer summarizes a frame with.
@@ -487,8 +531,8 @@ def build_frame_data(
             "track": int(row["track"]),
             "frame": int(row["frame"]),
             "passDirection": row["passDirection"],
-            # Site flags come from the TrackFrame GeoPackage; a stale GeoPackage
-            # means stale CalVal frames, so refresh it when the site list changes.
+            # ``main`` overwrites the GeoPackage's isCalVal with the frames over
+            # the DISP-S1 validation sites; isSNWG / isDNC are the GeoPackage's.
             "isCalVal": bool(row["isCalVal"]),
             "isSNWG": bool(row["isSNWG"]),
             "isDNC": bool(row["isDNC"]),
@@ -904,6 +948,7 @@ BODY_HTML = r"""<body>
             <option value="gslc_modes">GSLC mode (most common)</option>
             <option value="gslc_pols">GSLC polarization (most common)</option>
             <option value="gunw_count" id="opt-gunw" hidden>GUNW interferograms</option>
+            <option value="gunw_net" id="opt-gunw-net" hidden>GUNW network (connected / disconnected)</option>
           </select>
           <label>Fill opacity (<span id="opacity-val">32</span>%)</label>
           <input type="range" id="fill-opacity" min="0" max="100" value="32">
@@ -941,6 +986,7 @@ BODY_HTML = r"""<body>
         <div class="section-head" data-target="sec-flags"><span>Product / Site Flags</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-flags">
           <div class="check-row"><input type="checkbox" id="f-calval"><label for="f-calval" style="margin:0;color:var(--text)">CalVal frames only</label></div>
+          <div class="check-row"><input type="checkbox" id="f-selected-only"><label for="f-selected-only" style="margin:0;color:var(--text)">Show only selected frames</label></div>
           <div class="check-row" id="row-gps" hidden><input type="checkbox" id="f-gps-show"><label for="f-gps-show" style="margin:0;color:var(--text)">Show UNR GPS sites (<span id="gps-count">0</span>)</label></div>
           <div class="stat-line" id="gps-hint" hidden>Nevada Geodetic Laboratory sites; click one for its position time series.</div>
         </div>
@@ -1072,7 +1118,8 @@ APP_JS = r"""
     blackout_months:{ label:"Blackout months",     key:"blackout_months", kind:"num" },
     gslc_modes:    { label:"GSLC mode",            key:"_gslcMode",     kind:"cat" },
     gslc_pols:     { label:"GSLC polarization",    key:"_gslcPol",      kind:"cat" },
-    gunw_count:    { label:"GUNW interferograms",  key:"gunw_count_sel", kind:"num" }
+    gunw_count:    { label:"GUNW interferograms",  key:"gunw_count_sel", kind:"num" },
+    gunw_net:      { label:"GUNW network",         key:"_gunwNet",      kind:"cat" }
   };
 
   const baseColorMapsCache = {};
@@ -1083,6 +1130,8 @@ APP_JS = r"""
       m = new Map([["Ascending","#4da3ff"],["Descending","#ff8a4d"]]);
     } else if (propKey === "cons_cov") {
       m = new Map([["F","#4da3ff"],["P","#ff8a4d"],["none","#555a61"]]);
+    } else if (propKey === "_gunwNet") {
+      m = new Map([["connected","#7ee787"],["disconnected","#e5484d"],["no GUNW","#6b6b6b"]]);
     } else {
       const vals = uniqSorted(FRAME_DATA.features.map(f=>String(f.properties[propKey])));
       m = new Map();
@@ -1210,6 +1259,7 @@ APP_JS = r"""
     document.getElementById("product-ctrl").hidden = false;
     document.getElementById("map").classList.add("has-product");
     document.getElementById("opt-gunw").hidden = false;
+    document.getElementById("opt-gunw-net").hidden = false;
   }
 
   if (META.has_blackout) document.getElementById("opt-blackout").hidden = false;
@@ -1294,6 +1344,7 @@ APP_JS = r"""
     const idFilter = document.getElementById("f-id").value.trim().toLowerCase();
     const passVal = document.querySelector('input[name="pass"]:checked').value;
     const calval = document.getElementById("f-calval").checked;
+    const selectedOnly = document.getElementById("f-selected-only").checked;
     return FRAME_DATA.features.filter(f=>{
       const p = f.properties;
       if (trackSet && !trackSet.has(p.track)) return false;
@@ -1302,6 +1353,7 @@ APP_JS = r"""
           !String(p.frame_idx).includes(idFilter)) return false;
       if (passVal !== "all" && p.passDirection !== passVal) return false;
       if (calval && !p.isCalVal) return false;
+      if (selectedOnly && !selected.has(p.id)) return false;
       if (product === "gunw") {
         if (!matchesArrayFilter(asArray(p.gunw_modes), activeChips.gunwMode)) return false;
         if (!matchesArrayFilter(asArray(p.gunw_pols), activeChips.gunwPol)) return false;
@@ -1367,6 +1419,16 @@ APP_JS = r"""
     });
   }
   updateSelectedGunwCounts();
+
+  // Judged on all of a frame's interferograms, as the GUNW plot is, so a frame
+  // coloured disconnected is one whose plot says so.
+  function gunwNetworkStatus(ifgs){
+    const pairs = ifgs.map(g=>({ta: Date.parse(`${g.ref}T00:00:00Z`), tb: Date.parse(`${g.sec}T00:00:00Z`)}))
+      .filter(pt=>isFinite(pt.ta) && isFinite(pt.tb));
+    if (!pairs.length) return "no GUNW";
+    return gunwNetwork(pairs).components > 1 ? "disconnected" : "connected";
+  }
+  FRAME_DATA.features.forEach(f=>{ f.properties._gunwNet = gunwNetworkStatus(asArray(f.properties.gunw_ifgs)); });
 
   // ---------- GSLC acquisitions over time ----------
   // Per-frame date histograms are built once: the chart is redrawn on every
@@ -1492,7 +1554,7 @@ APP_JS = r"""
 
   ["f-track","f-frame","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
   document.querySelectorAll('input[name="pass"]').forEach(r=>r.addEventListener("change", applyFilters));
-  document.getElementById("f-calval").addEventListener("change", applyFilters);
+  ["f-calval","f-selected-only"].forEach(id=>document.getElementById(id).addEventListener("change", applyFilters));
 
   document.getElementById("btn-clear-filters").addEventListener("click", ()=>{
     document.getElementById("f-track").value = "";
@@ -1500,6 +1562,7 @@ APP_JS = r"""
     document.getElementById("f-id").value = "";
     document.querySelector('input[name="pass"][value="all"]').checked = true;
     document.getElementById("f-calval").checked = false;
+    document.getElementById("f-selected-only").checked = false;
     buildGslcChips();
     applyFilters();
   });
@@ -1568,7 +1631,7 @@ APP_JS = r"""
       const x = document.createElement("button");
       x.className = "li-x"; x.textContent = "✕";
       x.title = "Remove from selection";
-      x.onclick = ()=>{ selected.delete(p.id); refreshSelectedSource(); renderSelectedList(); };
+      x.onclick = ()=>{ selected.delete(p.id); selectionChanged(); };
       li.appendChild(sw); li.appendChild(lbl); li.appendChild(x);
       ul.appendChild(li);
     });
@@ -1585,6 +1648,12 @@ APP_JS = r"""
     }
   }
 
+  // With "Show only selected frames" on, the selection is itself a filter.
+  function selectionChanged(){
+    refreshSelectedSource(); renderSelectedList();
+    if (document.getElementById("f-selected-only").checked) applyFilters();
+  }
+
   function zoomToFeature(feature){
     const coords = [];
     const geom = feature.geometry;
@@ -1598,14 +1667,14 @@ APP_JS = r"""
     const id = feature.properties.id;
     if (selected.has(id)) selected.delete(id);
     else selected.set(id, {feature, color: currentColor});
-    refreshSelectedSource(); renderSelectedList();
+    selectionChanged();
   }
   function selectFrame(feature, color){
     selected.set(feature.properties.id, {feature, color: color || currentColor});
   }
 
   document.getElementById("btn-clear-sel").addEventListener("click", ()=>{
-    selected.clear(); refreshSelectedSource(); renderSelectedList();
+    selected.clear(); selectionChanged();
   });
 
   // ---------- import selection (CSV / GeoJSON / consistent-GSLC JSON) ----------
@@ -1670,7 +1739,7 @@ APP_JS = r"""
           if (obj.type === "FeatureCollection") added = importGeojson(obj);
           else added = importConsistent(obj);   // consistent-GSLC catalog
         }
-        refreshSelectedSource(); renderSelectedList();
+        selectionChanged();
         status.textContent = `Imported ${added} frame(s) from ${file.name}.`;
       } catch (err) {
         status.textContent = "Import failed: " + err.message;
@@ -2466,7 +2535,7 @@ APP_JS = r"""
     document.querySelectorAll("#product-ctrl [data-product]").forEach(b=>b.classList.toggle("active", b === btn));
     const sel = document.getElementById("color-by");
     if (product === "gunw") { gslcColorBy = sel.value; sel.value = "gunw_count"; }
-    else if (sel.value === "gunw_count") sel.value = gslcColorBy;
+    else if (sel.value.startsWith("gunw_")) sel.value = gslcColorBy;
     renderChips();
     applyFilters();          // re-filters on this product's chips and recolours
     document.querySelectorAll(".maplibregl-popup").forEach(el=>el.remove());
@@ -2670,6 +2739,13 @@ def main(argv: list[str] | None = None) -> None:
         "'create_gunw_catalog'); adds a GSLC / GUNW switch to the viewer.",
     )
     parser.add_argument(
+        "--calval-sites",
+        type=Path,
+        default=CALVAL_SITES,
+        help="GeoJSON of CalVal site polygons; the ascending and descending "
+        "frames covering them are the viewer's CalVal frames.",
+    )
+    parser.add_argument(
         "--gps-source",
         default=NGL_STATION_MAP,
         help="UNR/NGL station map URL, a local copy of that page, or a GeoJSON "
@@ -2696,6 +2772,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Loading frames from {args.frames_gpkg}")
     gdf = load_frames(args.frames_gpkg)
     print(f"  {len(gdf)} frames")
+    gdf["isCalVal"] = flag_calval_frames(gdf, gpd.read_file(args.calval_sites))
+    print(f"  {int(gdf['isCalVal'].sum())} CalVal frames from {args.calval_sites}")
 
     if args.gslc_catalog is not None:
         print(f"Loading GSLC catalog from {args.gslc_catalog}")

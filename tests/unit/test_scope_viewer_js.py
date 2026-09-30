@@ -367,3 +367,50 @@ def test_gunw_plot_marks_the_gap_and_the_cut_off_pairs() -> None:
     )
     # the lone first pair is the cut-off piece; the two-pair chain is the main one
     assert result == {"gaps": 1, "halos": 1}
+
+
+def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
+    def frame(idx: int) -> dict:
+        props = {
+            "id": f"47_{idx}",
+            "frame_idx": idx,
+            "track": 47,
+            "frame": idx,
+            "passDirection": "Ascending",
+            "isCalVal": False,
+            "gslc_modes": ["2005"],
+            "gslc_pols": ["DHDH"],
+        }
+        return {"properties": props}
+
+    shown = run_js(
+        ["parseIntSet", "matchesArrayFilter", "currentFiltered"],
+        "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'},"
+        " 'f-id': {value: ''}, 'f-calval': {checked: false},"
+        " 'f-selected-only': {checked: false}};"
+        " globalThis.document = {getElementById: id => state[id],"
+        " querySelector: () => ({value: 'all'})};"
+        " globalThis.product = 'gslc';"
+        " globalThis.activeChips = {gslcMode: new Set(), gslcPol: new Set()};"
+        " globalThis.selected = new Map([['47_15', {}], ['47_16', {}]]);"
+        " const ids = () => currentFiltered().map(f => f.properties.id);"
+        " const all = ids(); state['f-selected-only'].checked = true;"
+        " const only = ids(); selected.clear(); return [all, only, ids()];",
+        [frame(14), frame(15), frame(16)],
+    )
+    # the flag narrows the other filters rather than replacing them
+    assert shown == [["47_14", "47_15"], ["47_15"], []]
+
+
+def test_gunw_network_status_names_connected_and_disconnected_frames() -> None:
+    def ifg(ref: str, sec: str) -> dict:
+        return {"ref": ref, "sec": sec}
+
+    chain = [ifg("2025-11-01", "2025-11-13"), ifg("2025-11-13", "2025-11-25")]
+    split = [ifg("2025-11-01", "2025-11-13"), ifg("2025-12-07", "2025-12-19")]
+    result = run_js(
+        ["gunwNetwork", "gunwNetworkStatus"],
+        f"return [gunwNetworkStatus({json.dumps(chain)}),"
+        f" gunwNetworkStatus({json.dumps(split)}), gunwNetworkStatus([])];",
+    )
+    assert result == ["connected", "disconnected", "no GUNW"]
