@@ -5,7 +5,8 @@
 are not in the repository, so a checked-in viewer cannot simply be rebuilt after
 a UI change. This script swaps the generated parts of an existing HTML file --
 ``APP_CSS``, ``BODY_HTML``, ``APP_JS`` and the GPS site collection -- for the
-current ones, leaving the vendored MapLibre bundle and the embedded frame data
+current ones, and re-derives the frames' CalVal flag from the current site list.
+The vendored MapLibre bundle and the rest of the embedded frame data are left
 untouched.
 
 Examples
@@ -23,6 +24,8 @@ import argparse
 import json
 import re
 from pathlib import Path
+
+import geopandas as gpd
 
 import generate_scope_viewer as gen
 
@@ -72,13 +75,27 @@ def _upsert_gps_data(html: str, gps_sites: dict) -> str:
     )
 
 
-def sync(path: Path, gps_sites: dict) -> None:
+def _reflag_calval(html: str, calval_sites: gpd.GeoDataFrame) -> str:
+    opener = "const FRAME_DATA = "
+    start = html.index(opener) + len(opener)
+    end = html.index(";\nconst META", start)
+    frame_data = json.loads(html[start:end])
+    frames = gpd.GeoDataFrame.from_features(frame_data["features"], crs=4326)
+    flags = gen.flag_calval_frames(frames, calval_sites)
+    for feature, flag in zip(frame_data["features"], flags, strict=True):
+        feature["properties"]["isCalVal"] = bool(flag)
+    payload = json.dumps(frame_data, separators=(",", ":"))
+    return f"{html[:start]}{payload}{html[end:]}"
+
+
+def sync(path: Path, gps_sites: dict, calval_sites: gpd.GeoDataFrame) -> None:
     """Rewrite ``path`` with the current generated blocks."""
     html = path.read_text()
     html = _replace_app_css(html)
     html = _replace_body(html)
     html = _replace_app_js(html)
     html = _upsert_gps_data(html, gps_sites)
+    html = _reflag_calval(html, calval_sites)
     path.write_text(html)
     print(f"synced {path} ({path.stat().st_size / 1e6:.1f} MB)")
 
@@ -96,11 +113,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--no-gps", action="store_true", help="Embed an empty GPS collection."
     )
+    parser.add_argument(
+        "--calval-sites",
+        type=Path,
+        default=gen.CALVAL_SITES,
+        help="GeoJSON of CalVal site polygons the frames are flagged against.",
+    )
     args = parser.parse_args(argv)
 
     gps_sites = gen.load_gps_sites(None if args.no_gps else args.gps_source)
+    calval_sites = gpd.read_file(args.calval_sites)
     for path in args.html:
-        sync(path, gps_sites)
+        sync(path, gps_sites, calval_sites)
 
 
 if __name__ == "__main__":

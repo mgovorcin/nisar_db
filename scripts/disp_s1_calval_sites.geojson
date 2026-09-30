@@ -1,0 +1,15 @@
+{"type":"FeatureCollection","features":[
+{"type":"Feature","properties":{"frame_id":8622,"site":"New York","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-75.3696,41.3026],[-72.418,41.8139],[-72.0987,40.2842],[-74.9851,39.7821],[-75.3696,41.3026]]]}},
+{"type":"Feature","properties":{"frame_id":8882,"site":"Houston","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-97.3848,30.0226],[-94.83,30.5478],[-94.531,29.0144],[-97.0489,28.4969],[-97.3848,30.0226]]]}},
+{"type":"Feature","properties":{"frame_id":9156,"site":"California","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-123.7527,37.3416],[-120.9667,37.8562],[-120.6574,36.325],[-123.3898,35.819],[-123.7527,37.3416]]]}},
+{"type":"Feature","properties":{"frame_id":11115,"site":"California","orbit_pass":"DESCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-122.6804,36.9265],[-122.3698,38.4574],[-119.5028,38.1738],[-119.8697,36.6517],[-122.6804,36.9265]]]}},
+{"type":"Feature","properties":{"frame_id":11116,"site":"California","orbit_pass":"DESCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-122.9467,35.5999],[-122.6388,37.1313],[-119.8227,36.8463],[-120.1834,35.3236],[-122.9467,35.5999]]]}},
+{"type":"Feature","properties":{"frame_id":12640,"site":"Florida","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-82.731,28.8602],[-80.2055,29.3875],[-79.9072,27.8539],[-82.398,27.3341],[-82.731,28.8602]]]}},
+{"type":"Feature","properties":{"frame_id":18903,"site":"Ridgecrest","orbit_pass":"DESCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-119.0339,34.589],[-118.7272,36.1206],[-115.9473,35.8345],[-116.3036,34.3112],[-119.0339,34.589]]]}},
+{"type":"Feature","properties":{"frame_id":28486,"site":"Oklahoma","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-100.6986,35.5526],[-97.9768,36.0693],[-97.6709,34.5376],[-100.3439,34.0291],[-100.6986,35.5526]]]}},
+{"type":"Feature","properties":{"frame_id":33039,"site":"Hawaii","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-157.0437,20.4456],[-154.6909,20.9892],[-154.394,19.4539],[-156.7252,18.9171],[-157.0437,20.4456]]]}},
+{"type":"Feature","properties":{"frame_id":33065,"site":"Unimak Island","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-165.8494,54.9351],[-161.9883,55.4544],[-161.5912,53.9306],[-165.3161,53.4249],[-165.8494,54.9351]]]}},
+{"type":"Feature","properties":{"frame_id":36542,"site":"California","orbit_pass":"ASCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-121.6695,37.2408],[-118.8874,37.7555],[-118.5783,36.2242],[-121.3072,35.7181],[-121.6695,37.2408]]]}},
+{"type":"Feature","properties":{"frame_id":42779,"site":"Alaska","orbit_pass":"DESCENDING"},"geometry":{"type":"Polygon","coordinates":[[[-149.9246,60.62],[-149.4354,62.1397],[-144.671,61.8212],[-145.3777,60.3204],[-149.9246,60.62]]]}},
+{"type":"Feature","properties":{"frame_id":null,"site":"Mexico City","orbit_pass":null},"geometry":{"type":"Polygon","coordinates":[[[-99.4,19.15],[-98.85,19.15],[-98.85,19.7],[-99.4,19.7],[-99.4,19.15]]]}}
+]}
