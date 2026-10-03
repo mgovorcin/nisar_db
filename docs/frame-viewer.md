@@ -27,22 +27,36 @@ the embedded copy below is served as a static asset with these docs.
 It opens on the globe projection (the control at the bottom right switches to
 Mercator), with frames coloured by GSLC count in CMR and the science modes
 (`2005`, `4005`) and polarizations (`DHDH`, `QPDH`) preselected under
-**GSLC Mode / Polarization**. The count colouring follows those chips, so the
-ramp always answers "how many granules of the kind I selected". Every swatch in
-the **Frame Color / Opacity** legend is a colour picker — click one to recolour
-that category, and **Reset to default** puts the palette back.
+**GSLC Mode / Polarization**. The count colourings (GSLC acquisitions, duplicate
+granules, distinct modes, GUNW interferograms) follow those chips *and* the date
+range of **GSLC Acquisitions Over Time**: drag across its bars, or type the
+dates, and every frame is recounted over just that window. The numeric ramps fit
+the frames currently shown.
 
-Clicking a frame opens the frame panel: **Show granules** expands the granule
+**Frame Color / Opacity** has two tabs, the same as the map's colour panel.
+**Color by** lists the colourings grouped into counts, mode / coverage, planning
+and flags, each with a preview of its colours. **Style** holds fill and outline
+opacity and the colormap: pick one of 31, in folding groups (closed at first; each header names the
+current colormap) of perceptual (Viridis, Turbo,
+Batlow, ...), single hue (Blues, Greens, ...), multi hue (YlOrRd, YlGnBu, ...)
+and diverging (RdBu, Vik, Roma, ...), invert it, or fix its min / max; an empty
+range, or **Auto**, fits the frames shown again. Every swatch of a categorical
+legend is a colour picker — click one to recolour that category. **Reset all to
+default** puts colours, colormaps, ranges and opacities back.
+
+Clicking a frame opens the frame panel; drag its bottom-right corner to resize
+it, or use ⤢ to widen it (the map pans to keep it on screen). Its other parts: **Show granules** expands the granule
 list, which can be filtered to ascending or descending passes; **Export CSV**
 downloads that frame's granules; and **Show plot** charts observation mode
 against acquisition date, drawing ascending acquisitions as circles and
-descending as diamonds.
+descending as diamonds. The plot window resizes from its corner, and ⤢ fills the screen; the chart redraws to the new size.
 
 The **(i)** button above the globe toggle turns on hover summaries: with it on,
 pointing at a frame pops up its summary, which stays until you move on or close
 it with its `x`. **GSLC Acquisitions Over Time**, at the top of the sidebar,
 counts granules by acquisition date across the frames currently shown — binning
-to weeks or months as the span grows — and takes a start/end date of its own.
+to weeks or months as the span grows. Its date range (dragged on the bars or
+typed) also sets the window the frame colours count over; **All** clears it.
 
 When the viewer is built with a GUNW catalog, a **GSLC / GUNW** switch sits at
 the top left. GUNW colours the frames by interferogram count and turns the hover
@@ -76,6 +90,62 @@ reads the flags with HTTP byte-range requests (an Earthdata login in
 `~/.netrc`) into `catalog/granule_flags.json.gz`; the weekly viewer build reads
 only the granules published since the last run.
 
+**Rollout regions.** NISAR has no rollout list of its own yet, so each NISAR
+frame is tagged with the DISP-S1 North America rollout options it overlaps:
+priorities `P0`, `P1`, `P2`, `P3a`, `P3b` and `P4`, from the frame-based rollout
+in [`opera-adt/burst_db`](https://github.com/opera-adt/burst_db/tree/main/src/burst_db/data)
+(priority 3 is split into its 3a and 3b deliveries). A frame joins an option
+once that option's Sentinel-1 frames cover at least a quarter of it, so a frame
+on a boundary can sit in two. The **Rollout Regions** section lists the frames
+per option under the other filters; click an option to show only its frames,
+and **Color frames by → Rollout option** paints each frame by its earliest
+option. The frame popup names its options and the states / regions it overlaps,
+and the CSV export carries both. `scripts/make_rollout_regions.py` refreshes
+[`scripts/disp_s1_rollout_regions.geojson`](https://github.com/opera-adt/nisar_db/blob/main/scripts/disp_s1_rollout_regions.geojson)
+from burst_db; `--rollout` on either viewer script takes another GeoJSON, or an
+OPERA PCM-style region database `{"<option>": [frame_idx, ...]}` once an official
+NISAR list exists.
+
+**Map buttons.** Three buttons stack above the globe toggle at the bottom
+right. For the two overlays each click steps through *layer on*, *layer and
+panel*, then *off*; a panel's `x` hides just the panel. On a phone only one
+bottom panel is open at a time.
+
+- The *palette* button is **Color frames by** on the map. The first click opens
+  its panel. The **Color by** tab lists every colouring for the product shown
+  (GSLC or GUNW), grouped into counts, mode / coverage, planning and flags, each
+  with a preview of its colours; tap one to apply it. The **Style** tab holds
+  fill opacity (with 0-100 presets), outline opacity (fill 0 with outlines gives
+  an outline-only map), and the colormap, invert and range of a numeric
+  colouring or the colour of each category. The second click (or the panel's
+  `x`) closes the panel and leaves a small legend on the map; drag it by its
+  title bar to wherever it is out of the way (the spot is remembered), or click
+  it to reopen the panel. The third click, or the legend's `x`, hides it. The panel
+  and the sidebar's **Frame Color / Opacity** edit the same settings.
+- The *flag* button draws the rollout regions themselves, coloured by option,
+  with a panel listing each option's NISAR and Sentinel-1 frame counts and the
+  states / regions it spans; click an option to zoom to it.
+- The *cloud* button shows the **rainy / snow season blackouts**: every frame
+  with a blackout window is filled on a light-to-dark blue ramp by the share of
+  the year it loses (**YR**, the default; the panel gives it in days), or of
+  one month picked in the panel. The frame colouring is hidden underneath while
+  it is on. Most windows are winter snow cover. Central America's frames carry
+  an August-November window instead: its peak rainy season, which DISP-S1
+  blacks out the same way and the NISAR windows inherit.
+
+**CRID.** The **Mode / Polarization / CRID** section also lists the composite
+release IDs (`P05023`, ...) read from the granule names. Selecting some narrows
+the map to frames with granules from those releases and recounts the colourings
+over just them; none selected means every release.
+
+**Blackout by month.** When the viewer is built with blackout dates, the
+**Blackout by Month** chart counts, for each calendar month, the frames shown
+whose blackout window covers at least half of it (dark) or any part of it
+(light). Clicking a month colours the map by the share of that month each frame
+loses (**Color frames by → Blackout share of a month**, with a month picker),
+and the frame popup draws a twelve-month strip shaded by the same share.
+**Blackout duration (months)** still colours by the window's total length.
+
 **Show only selected frames**, in the same section, narrows the map, the
 summary and the over-time chart to the frames in your selection, on top of
 whatever other filters are set.
@@ -90,12 +160,16 @@ whatever other filters are set.
     descending alike. This replaces the TrackFrame GeoPackage's own
     `isCalVal` flag; `isSNWG` and `isDNC` are still carried from the GeoPackage.
     To change the sites, edit the GeoJSON (or pass `--calval-sites`) and rebuild
-    the viewer, or re-flag an already built one in place:
+    the viewer, or re-flag an already built one in place (this also re-tags
+    the rollout options):
 
     ```bash
     python scripts/generate_scope_viewer.py --frames-gpkg ... --gslc-db ...
     python scripts/sync_viewer_html.py docs/assets/opera_nisar_db_viewer.html
     ```
+
+    `sync_viewer_html.py` also takes `--blackout-json` and `--gunw-catalog` to
+    attach snow blackout dates or the GUNW view to a page built without them.
 
 <iframe
   src="assets/opera_nisar_db_viewer.html"

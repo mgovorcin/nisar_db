@@ -32,6 +32,9 @@ It is intentionally a design sibling of ``scripts/nisar_frame_viewer_v1.html``
   per-frame hover/click detail of the blacked-out ranges, and gray blackout
   bands in the per-frame plot; an optional reference-dates JSON adds the
   InSAR reference resets to the same hover/click detail, and
+* every frame is tagged with the DISP-S1 rollout options it overlaps
+  (``disp_s1_rollout_regions.geojson``, or ``--rollout``), which the viewer
+  lists, filters and colours by, and
 * an optional GUNW catalog adds a GSLC / GUNW switch: in GUNW mode frames are
   colored by interferogram count, the over-time chart and mode / polarization
   chips follow GUNW, and the hover, popup, CSV export and plot describe the
@@ -112,6 +115,19 @@ CALVAL_SITES = Path(__file__).resolve().parent / "disp_s1_calval_sites.geojson"
 # neighbouring tracks a site straddles, not the frames that clip a corner.
 CALVAL_MIN_OVERLAP = 0.10
 
+#: The DISP-S1 North America rollout on Sentinel-1 frames, written by
+#: ``make_rollout_regions.py``; NISAR frames take the options they overlap.
+ROLLOUT_REGIONS = Path(__file__).resolve().parent / "disp_s1_rollout_regions.geojson"
+
+# A NISAR frame joins a rollout option once that option's S1 frames cover this
+# share of it: a frame half in a region is processed with it, one grazing the
+# edge is not.
+ROLLOUT_MIN_OVERLAP = 0.25
+
+# Region names are listed for the S1 frames covering at least this share of the
+# NISAR frame, so a sliver of a neighbouring state does not make the list.
+ROLLOUT_REGION_MIN_SHARE = 0.05
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -169,6 +185,145 @@ def flag_calval_frames(
         share = frames.geometry.intersection(site).area / site.area
         flagged |= share >= min_overlap
     return flagged
+
+
+def rollout_by_frame(
+    gdf: gpd.GeoDataFrame,
+    source: Path,
+    min_overlap: float = ROLLOUT_MIN_OVERLAP,
+) -> tuple[list[str], list[list[str]], list[list[str]]]:
+    """Tag every frame with the rollout options (and regions) it belongs to.
+
+    Two sources are accepted. A GeoJSON of polygons carrying ``rollout`` (and
+    optionally ``region_name``), such as :data:`ROLLOUT_REGIONS`, is matched by
+    overlap: a frame joins an option once the option's polygons cover
+    ``min_overlap`` of it. A JSON object ``{"<option>": [frame_idx, ...]}``, the
+    layout of the OPERA PCM region database, is taken as is.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        Frame polygons with a ``frame_idx`` column.
+    source : Path
+        Rollout GeoJSON or ``{option: [frame_idx, ...]}`` JSON.
+    min_overlap : float
+        Smallest share of a frame an option must cover (GeoJSON source only).
+
+    Returns
+    -------
+    options : list of str
+        Every rollout option, in rollout order.
+    rollout : list of list of str
+        Per frame (aligned with ``gdf``), the options it belongs to.
+    regions : list of list of str
+        Per frame, the region names it overlaps; empty for a frame-list source.
+
+    """
+    payload = json.loads(Path(source).read_text())
+    if payload.get("type") != "FeatureCollection":
+        options = list(payload)
+        members = {opt: {int(i) for i in payload[opt]} for opt in options}
+        tagged = [
+            [opt for opt in options if int(idx) in members[opt]]
+            for idx in gdf["frame_idx"]
+        ]
+        return options, tagged, [[] for _ in tagged]
+
+    regions_gdf = gpd.read_file(source).to_crs("EPSG:6933")
+    frames = gdf.reset_index(drop=True).to_crs("EPSG:6933")
+    frame_area = frames.geometry.area
+    options = sorted(regions_gdf["rollout"].unique())
+    rollout: list[list[str]] = [[] for _ in range(len(frames))]
+    for opt in options:
+        union = regions_gdf.loc[regions_gdf["rollout"] == opt].geometry.union_all()
+        share = frames.geometry.intersection(union).area / frame_area
+        for i in share.index[share >= min_overlap]:
+            rollout[i].append(opt)
+
+    names: list[list[str]] = [[] for _ in range(len(frames))]
+    if "region_name" in regions_gdf:
+        pairs = gpd.sjoin(
+            frames[["geometry"]], regions_gdf, how="inner", predicate="intersects"
+        )
+        for i, row in pairs.iterrows():
+            if row["rollout"] not in rollout[i]:
+                continue
+            other = regions_gdf.geometry.iloc[row["index_right"]]
+            share = frames.geometry.iloc[i].intersection(other).area / frame_area[i]
+            if share >= ROLLOUT_REGION_MIN_SHARE and row["region_name"] not in names[i]:
+                names[i].append(row["region_name"])
+    return options, rollout, [sorted(n) for n in names]
+
+
+# Overview polygons are simplified to about a kilometre: they are drawn at
+# continent scale, and the frame outlines carry the detail.
+ROLLOUT_OVERVIEW_TOLERANCE = 0.01
+
+
+def rollout_overview(
+    gdf: gpd.GeoDataFrame,
+    source: Path,
+    options: list[str],
+    rollout: list[list[str]],
+) -> dict:
+    """Dissolve the rollout into one outline per option for the overview layer.
+
+    A GeoJSON source is drawn as it is defined, from its own polygons; a frame
+    list has no geometry of its own, so its options are drawn as the union of
+    their frames.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        Frame polygons, aligned with ``rollout``.
+    source : Path
+        The rollout source passed to :func:`rollout_by_frame`.
+    options : list of str
+        Rollout options, in rollout order.
+    rollout : list of list of str
+        Per frame, the options it belongs to.
+
+    Returns
+    -------
+    dict
+        GeoJSON ``FeatureCollection``, one feature per option carrying
+        ``rollout``, ``n_frames`` (frames tagged with it), ``n_source`` (source
+        polygons, 0 for a frame list) and ``regions``.
+
+    """
+    frames = gdf.reset_index(drop=True)
+    payload = json.loads(Path(source).read_text())
+    is_geojson = payload.get("type") == "FeatureCollection"
+    regions_gdf = gpd.read_file(source) if is_geojson else None
+    features = []
+    for opt in options:
+        if regions_gdf is not None:
+            part = regions_gdf.loc[regions_gdf["rollout"] == opt]
+            names = (
+                sorted(part["region_name"].dropna().unique())
+                if "region_name" in part
+                else []
+            )
+            n_source = len(part)
+        else:
+            part = frames.loc[[opt in r for r in rollout]]
+            names, n_source = [], 0
+        if part.empty:
+            continue
+        shape = part.geometry.union_all().simplify(ROLLOUT_OVERVIEW_TOLERANCE)
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": shape.__geo_interface__,
+                "properties": {
+                    "rollout": opt,
+                    "n_frames": sum(opt in r for r in rollout),
+                    "n_source": n_source,
+                    "regions": [str(n) for n in names],
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
 
 
 #: Per-granule columns the viewer summarizes a frame with.
@@ -281,16 +436,13 @@ def common_mode_coverage(group: pd.DataFrame) -> tuple[str, str]:
 
     1. coverage — full-frame (``F``) beats partial (``P``), reversed when more
        than :data:`PARTIAL_DOMINANCE_THRESHOLD` of the candidates are partial,
-    2. the acquisition count of the selected ``(mode, coverage)`` combo, with
-       non-standard modes competing only when the frame has no standard
-       acquisitions, and
+    2. the acquisition count of the selected ``(mode, coverage)`` combo, and
     3. mode — :data:`MODE_PRIORITY` (``4005`` then ``2005``) settles modes level
        on coverage and count.
 
-    This is a describe-the-catalog view, so unlike the package function it
-    always returns a winner: a frame seen only in non-standard modes still gets
-    a mode here, while the consistent-GSLC catalog drops it (such a frame shows
-    up as ``in_consistent: false`` once ``--consistent-json`` is supplied).
+    Only the science modes in :data:`STANDARD_MODES` compete: OPERA processes
+    no other mode, so a frame seen only in others (``0505``, ``0005``, ...) gets
+    ``("none", "none")``, as the consistent-GSLC catalog leaves it out.
     """
     counts = (
         group.groupby(["mode", "coverage"])
@@ -298,8 +450,9 @@ def common_mode_coverage(group: pd.DataFrame) -> tuple[str, str]:
         .unstack(fill_value=0)
         .reindex(columns=["F", "P"], fill_value=0)
     )
-    standard = counts[counts.index.isin(STANDARD_MODES)]
-    candidates = standard if not standard.empty else counts
+    candidates = counts[counts.index.isin(STANDARD_MODES)]
+    if candidates.empty:
+        return "none", "none"
 
     partial_share = candidates["P"].sum() / candidates.to_numpy().sum()
     preferred_coverage = "P" if partial_share > PARTIAL_DOMINANCE_THRESHOLD else "F"
@@ -549,6 +702,11 @@ def build_frame_data(
             "granules": s["granules"] if s else [],
         }
 
+        # Rollout options, attached by ``main`` from ``rollout_by_frame``.
+        if "rollout" in row.index:
+            props["rollout"] = list(row["rollout"])
+            props["rollout_regions"] = list(row["rollout_regions"])
+
         # A published consistent-GSLC catalog wins over the recomputed choice.
         if consistent is not None:
             entry = consistent.get(str(frame_idx))
@@ -558,6 +716,10 @@ def build_frame_data(
                 props["n_consistent"] = len(entry.get("sensing_time_list", []))
                 props["in_consistent"] = True
             else:
+                # The catalog is the processing list: a frame it leaves out has
+                # no consistent mode, whatever the catalog view would pick.
+                props["cons_mode"] = "none"
+                props["cons_cov"] = "none"
                 props["n_consistent"] = 0
                 props["in_consistent"] = False
 
@@ -743,7 +905,12 @@ def load_gps_sites(source: str | Path | None) -> dict:
     return parse_gps_sites(text)
 
 
-def render_html(frame_data: dict, meta: dict, gps_sites: dict | None = None) -> str:
+def render_html(
+    frame_data: dict,
+    meta: dict,
+    gps_sites: dict | None = None,
+    rollout_regions: dict | None = None,
+) -> str:
     """Render the full self-contained HTML document as a string."""
     maplibre_css = (VENDOR_DIR / "maplibre-gl.css").read_text()
     maplibre_js = (VENDOR_DIR / "maplibre-gl.js").read_text()
@@ -756,6 +923,11 @@ def render_html(frame_data: dict, meta: dict, gps_sites: dict | None = None) -> 
         + ";\nconst UNR_GPS_DATA = "
         + json.dumps(
             gps_sites or {"type": "FeatureCollection", "features": []},
+            separators=(",", ":"),
+        )
+        + ";\nconst ROLLOUT_DATA = "
+        + json.dumps(
+            rollout_regions or {"type": "FeatureCollection", "features": []},
             separators=(",", ":"),
         )
         + ";"
@@ -849,15 +1021,14 @@ APP_CSS = r"""
   #product-ctrl button{background:none;border:none;color:var(--text);padding:3px 10px;border-radius:4px;cursor:pointer;font:inherit;}
   #product-ctrl button.active{background:var(--accent);color:var(--bg);font-weight:600;}
   #map.has-product #pass-ctrl{top:48px;}
-  #map.has-product #click-ctrl{top:86px;}
-  #map.has-product #search{top:124px;}
+  #map.has-product #search{top:86px;}
   #pass-ctrl{position:absolute;top:10px;left:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #pass-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
-  #click-ctrl{position:absolute;top:48px;left:10px;background:var(--scrim);border:1px solid var(--border);
+  #click-ctrl{position:absolute;top:48px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;}
   #click-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
-  #search{position:absolute;top:86px;left:10px;z-index:6;width:268px;}
+  #search{position:absolute;top:48px;left:10px;z-index:6;width:268px;}
   #search input{width:100%;box-sizing:border-box;background:var(--scrim);color:var(--text);border:1px solid var(--border);
     border-radius:6px;padding:6px 9px;font:inherit;font-size:11.5px;}
   #search input:focus{outline:2px solid var(--accent);outline-offset:-1px;}
@@ -887,6 +1058,16 @@ APP_CSS = r"""
   .pop-title{font-weight:600;margin-bottom:3px;}
   .pop-row{color:var(--text-dim);}
   .granule-list{max-height:220px;overflow-y:auto;margin-top:6px;border-top:1px solid var(--border);padding-top:4px;}
+  /* The frame popup can be dragged larger from its corner, or blown up with ⤢;
+     its lists then use the room instead of keeping their own scroll height. */
+  .frame-pop .maplibregl-popup-content{resize:both;overflow:auto;width:340px;min-width:240px;min-height:110px;
+    max-width:92vw;max-height:80vh;}
+  .frame-pop .maplibregl-popup-content{padding-right:44px;}
+  .frame-pop.pop-big .maplibregl-popup-content{width:min(680px,90vw);}
+  .frame-pop.pop-big .granule-list,.frame-pop.pop-resized .granule-list{max-height:none;}
+  .pop-expand{position:absolute;top:1px;right:22px;background:none;border:none;color:var(--text-dim);
+    font-size:14px;line-height:1;padding:3px 5px;cursor:pointer;}
+  .pop-expand:hover{color:var(--accent);}
   .granule-row{font-size:10.5px;color:var(--text-dim);padding:2px 0;border-bottom:1px solid var(--hairline);font-family:ui-monospace,Menlo,Consolas,monospace;}
   .granule-row .gdate{color:var(--text);}
   .granule-row .gmode{color:var(--accent2);}
@@ -900,6 +1081,104 @@ APP_CSS = r"""
     border-radius:5px;padding:3px 5px;font-size:11px;color-scheme:dark;}
   body.theme-light .date-row input[type=date]{color-scheme:light;}
   .legend-color{width:28px;height:20px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;}
+  .cmap-bar-click{cursor:pointer;}
+  .cmap-bar-click:hover .cmap-ramp{outline:1px solid var(--accent);}
+  .cmap-ramp{height:12px;border-radius:4px;}
+  .cmap-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim);margin-top:2px;}
+  .cmap-pop{margin-top:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--inset);}
+  .cmap-pop[hidden]{display:none;}
+  .cmap-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px;padding:2px 0 4px;}
+  .cmap-group{border-bottom:1px solid var(--hairline);}
+  .cmap-group:last-child{border-bottom:none;}
+  .cmap-group summary{cursor:pointer;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-dim);
+    padding:4px 0;user-select:none;}
+  .cmap-group summary:hover{color:var(--accent);}
+  .cmap-group .cmap-count{opacity:.7;}
+  .cmap-group .cmap-cur{text-transform:none;letter-spacing:0;color:var(--text);}
+  .cmap-grid button{display:flex;flex-direction:column;gap:2px;padding:3px 5px;font-size:10px;text-align:left;
+    border-radius:6px;overflow:hidden;background:var(--panel2);border:1px solid var(--border);color:var(--text);cursor:pointer;}
+  .cmap-grid button.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .cmap-grid .cmap-swatch{display:block;height:7px;border-radius:3px;}
+  .cmap-range{display:flex;gap:4px;align-items:center;margin-top:6px;font-size:11px;color:var(--text-dim);}
+  .cmap-range input[type=number]{width:64px;background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:4px;padding:2px 4px;font-size:11px;}
+  .cmap-range label{display:flex;align-items:center;gap:3px;margin:0;color:var(--text);font-size:11px;}
+  .cmap-range input[type=checkbox]{width:auto;margin:0;}
+  .day-brush{fill:var(--accent);fill-opacity:.18;stroke:var(--accent);stroke-width:1;pointer-events:none;}
+  #daily-chart svg{cursor:crosshair;}
+  .bo-bar{fill:var(--accent);cursor:pointer;}
+  .bo-bar-any{fill:var(--accent);fill-opacity:.35;cursor:pointer;}
+  .bo-bar.sel,.bo-bar-any.sel{stroke:var(--text);stroke-width:1;}
+  .month-strip{display:grid;grid-template-columns:repeat(12,1fr);gap:2px;margin-top:4px;}
+  .month-strip button{display:flex;flex-direction:column;align-items:center;font:inherit;font-size:9px;line-height:1.15;
+    padding:2px 0;border-radius:3px;color:var(--text);cursor:pointer;background:var(--inset);border:1px solid var(--hairline);}
+  .month-strip button small{font-size:8.5px;color:var(--text-dim);}
+  .month-strip button.none{opacity:.5;}
+  .month-strip button:hover{border-color:var(--accent);}
+  .month-strip button.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .month-list[hidden]{display:none;}
+  .month-strip span{font-size:9px;text-align:center;padding:2px 0;border-radius:2px;color:var(--text);
+    background:var(--inset);border:1px solid var(--hairline);}
+  .rollout-row{display:flex;align-items:center;gap:6px;margin:3px 0;font-size:11px;cursor:pointer;user-select:none;}
+  .rollout-row .rl{width:42px;color:var(--text);flex-shrink:0;font-weight:600;}
+  .rollout-row .bn{width:62px;text-align:right;color:var(--text);flex-shrink:0;}
+  .rollout-row.off{opacity:.4;}
+  .rollout-row:hover .rl{color:var(--accent);}
+  .cat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 8px;}
+  .cat-row{display:flex;align-items:center;gap:6px;margin:0;font-size:11px;color:var(--text-dim);cursor:pointer;}
+  .cat-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cb-tabs{display:flex;gap:2px;background:var(--inset);border:1px solid var(--border);border-radius:6px;padding:2px;}
+  .cb-tabs button{background:none;border:none;color:var(--text-dim);font:inherit;font-size:11.5px;padding:3px 10px;border-radius:4px;cursor:pointer;}
+  .cb-tabs button.active{background:var(--accent);color:#1a1a1a;font-weight:600;}
+  .cb-group{font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-dim);margin:8px 0 2px;}
+  .cb-opt{display:flex;align-items:center;gap:8px;width:100%;background:none;border:1px solid transparent;border-radius:6px;
+    color:var(--text);font:inherit;font-size:11.5px;text-align:left;padding:3px 6px;cursor:pointer;}
+  .cb-opt:hover{background:var(--panel2);}
+  .cb-opt.active{border-color:var(--accent);background:var(--panel2);}
+  .cb-opt .cb-name{flex:1;}
+  .cb-prev{display:inline-flex;width:54px;height:9px;border-radius:3px;overflow:hidden;flex-shrink:0;}
+  .cb-prev-cat i{flex:1;}
+  details.cb-more{border-bottom:1px solid var(--hairline);}
+  details.cb-more:last-child{border-bottom:none;}
+  details.cb-more summary{cursor:pointer;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-dim);
+    padding:5px 0;user-select:none;}
+  details.cb-more summary:hover{color:var(--accent);}
+  details.cb-more[open] summary{padding-bottom:2px;}
+  #colorby-panel{width:280px;max-height:min(62vh,500px);}
+  #colorby-panel .cmap-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .cb-slider{display:flex;align-items:center;gap:8px;margin:6px 0 2px;font-size:11.5px;color:var(--text-dim);}
+  .cb-slider input[type=range]{flex:1;}
+  .cb-slider b{width:38px;text-align:right;color:var(--text);font-weight:600;}
+  .cb-presets{display:flex;gap:4px;margin-bottom:6px;}
+  .cb-presets .chip{flex:1;text-align:center;}
+  .cb-note{margin:6px 0;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--inset);font-size:11px;color:var(--text-dim);}
+  .cb-note[hidden]{display:none;}
+  .cb-legend{margin-top:8px;padding-top:6px;border-top:1px solid var(--hairline);}
+  .mini-cats{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:10.5px;color:var(--text-dim);}
+  .mini-cats span{display:inline-flex;align-items:center;gap:4px;}
+  .mini-cats i{width:10px;height:10px;border-radius:2px;display:inline-block;}
+  #map-legend{position:absolute;left:10px;bottom:34px;z-index:5;width:230px;background:var(--scrim);border:1px solid var(--border);
+    border-radius:6px;padding:6px 8px;font-size:11px;color:var(--text);cursor:pointer;}
+  #map-legend[hidden]{display:none;}
+  #map-legend .ml-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-weight:600;
+    cursor:move;touch-action:none;user-select:none;}
+  #map-legend .ml-head .ml-grip{color:var(--text-dim);margin-right:4px;letter-spacing:-1px;}
+  .maplibregl-ctrl-group button.overlay-btn{display:flex;align-items:center;justify-content:center;color:#303030;}
+  .maplibregl-ctrl-group button.overlay-btn.active{background:#b2daf7;color:#14425e;}
+  .overlay-panel{position:absolute;right:52px;bottom:30px;z-index:6;width:300px;max-height:min(60vh,520px);overflow-y:auto;
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;
+    box-shadow:0 4px 16px rgb(0 0 0 / .3);}
+  .overlay-panel[hidden]{display:none;}
+  .overlay-head{display:flex;justify-content:space-between;align-items:center;font-weight:600;margin-bottom:4px;}
+  .ov-row{display:flex;gap:7px;align-items:flex-start;padding:4px 2px;border-bottom:1px solid var(--hairline);cursor:pointer;}
+  .ov-row:hover{background:var(--panel2);}
+  .ov-sw{width:12px;height:12px;border-radius:3px;flex-shrink:0;margin-top:2px;}
+  .ov-row .ov-name{font-weight:600;color:var(--text);}
+  .ov-row .ov-sub{color:var(--text-dim);font-size:10.5px;line-height:1.35;}
+  .month-chips{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin:6px 0;}
+  .month-chips .chip{text-align:center;padding:3px 0;}
+  .snow-ramp{height:10px;border-radius:4px;background:linear-gradient(90deg,#f2f7fc,#c6dbef,#9ecae1,#6baed6,#3182bd,#08519c,#08306b);
+    border:1px solid var(--border);}
   #theme-toggle{position:absolute;top:11px;right:12px;background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px;}
   #theme-toggle:hover{color:var(--accent);}
   .seg{display:flex;gap:4px;margin:6px 0 2px 0;}
@@ -907,7 +1186,10 @@ APP_CSS = r"""
   #chart-modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;}
   #chart-modal[hidden]{display:none;}
   .chart-card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:8px;
-    padding:12px 14px;max-width:min(780px,94vw);max-height:88vh;overflow:auto;}
+    padding:12px 14px;width:min(780px,94vw);min-width:min(360px,94vw);min-height:200px;max-width:98vw;max-height:94vh;
+    overflow:auto;resize:both;}
+  .chart-card.big{width:96vw;height:92vh;}
+  #chart-expand{font-size:15px;}
   .chart-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;}
   .chart-sub{color:var(--text-dim);font-size:11px;margin:2px 0 8px 0;}
   .chart-tick{fill:var(--text-dim);font-size:10px;}
@@ -936,8 +1218,51 @@ APP_CSS = r"""
   .bar-row{display:flex;align-items:center;gap:6px;margin:3px 0;font-size:11px;}
   .bar-row .bl{width:64px;color:var(--text-dim);flex-shrink:0;}
   .bar-track{flex:1;height:10px;background:var(--inset);border-radius:5px;overflow:hidden;}
-  .bar-fill{height:100%;border-radius:5px;}
+  .bar-fill{display:block;height:100%;border-radius:5px;}
   .bar-row .bn{width:34px;text-align:right;color:var(--text);flex-shrink:0;}
+  #menu-btn,#sidebar-close,#sidebar-backdrop{display:none;}
+  #daily-chart svg{touch-action:pan-y;}
+
+  /* Phones: the map takes the whole screen and the sidebar slides in over it
+     from the menu button. Inputs are 16px so iOS does not zoom on focus. */
+  @media (max-width: 768px){
+    #app{display:block;height:100dvh;}
+    #map{position:absolute;inset:0;}
+    #sidebar{position:fixed;top:0;left:0;bottom:0;z-index:40;width:min(88vw,360px);min-width:0;
+      transform:translateX(-102%);transition:transform .22s ease;box-shadow:4px 0 18px rgb(0 0 0 / .45);
+      padding-bottom:env(safe-area-inset-bottom);}
+    #sidebar.open{transform:none;}
+    #sidebar-backdrop{position:fixed;inset:0;z-index:39;background:rgb(0 0 0 / .45);}
+    #sidebar.open ~ #sidebar-backdrop{display:block;}
+    #sidebar-close{display:block;position:absolute;top:9px;right:40px;background:none;border:none;
+      color:var(--text-dim);font-size:22px;line-height:1;padding:2px 6px;cursor:pointer;}
+    #menu-btn{display:flex;align-items:center;justify-content:center;position:absolute;top:10px;left:10px;z-index:7;
+      width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:var(--scrim);color:var(--text);
+      font-size:20px;cursor:pointer;}
+    #search,#map.has-product #search{top:10px;left:58px;right:10px;width:auto;}
+    #search input{font-size:16px;padding:8px 10px;}
+    #product-ctrl,#map.has-product #pass-ctrl,#pass-ctrl{top:58px;}
+    #product-ctrl{left:10px;}
+    #map.has-product #pass-ctrl{left:132px;}
+    #pass-ctrl{left:10px;padding:5px 7px;gap:6px;}
+    #basemap-ctrl{top:96px;left:10px;right:auto;flex-wrap:wrap;gap:6px;padding:5px 7px;font-size:11px;}
+    #top-hint,.maplibregl-ctrl-zoom-in,.maplibregl-ctrl-zoom-out{display:none !important;}
+    #click-ctrl{top:134px;left:10px;right:auto;padding:5px 7px;}
+    .maplibregl-ctrl-bottom-right{margin-bottom:env(safe-area-inset-bottom);}
+    .overlay-panel{left:8px;right:56px;width:auto;bottom:calc(8px + env(safe-area-inset-bottom));max-height:52vh;}
+    #colorby-panel{width:auto;max-height:52vh;}
+    #map-legend{left:8px;bottom:calc(34px + env(safe-area-inset-bottom));width:auto;max-width:calc(100vw - 72px);}
+    .maplibregl-popup{max-width:92vw !important;}
+    .maplibregl-popup-content{max-height:58vh;overflow-y:auto;}
+    .chart-card{width:98vw;max-width:98vw;max-height:92dvh;padding:10px;}
+    input[type=text],input[type=search],input[type=number],select{font-size:16px;}
+    .date-row input[type=date]{font-size:14px;min-width:0;}
+    .footer-actions{padding:8px 10px calc(8px + env(safe-area-inset-bottom));gap:6px;}
+    .footer-actions .btn{flex:1 1 45%;padding:8px 6px;}
+    .chip{padding:5px 9px;font-size:12px;}
+    .cmap-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  }
+
   ::-webkit-scrollbar{width:8px;height:8px;}
   ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
   #count-badge{background:var(--accent);color:#1a1a1a;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;}
@@ -951,6 +1276,7 @@ BODY_HTML = r"""<body>
       <button id="theme-toggle" title="Switch to the light theme">&#9788;</button>
       <small>North America &middot; <span id="hdr-count">0</span> frames shown</small>
       <small id="hdr-queried">CMR queried: unknown</small>
+      <button id="sidebar-close" title="Close the panel" aria-label="Close the panel">&times;</button>
     </h1>
     <div id="sidebar-scroll">
 
@@ -958,6 +1284,7 @@ BODY_HTML = r"""<body>
         <div class="section-head" data-target="sec-daily"><span id="daily-title">GSLC Acquisitions Over Time</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-daily">
           <div class="stat-line" id="daily-note">GSLC granules in CMR over North America, counted by acquisition date across the frames currently shown. Hover a bar for its count.</div>
+          <div class="stat-line">Drag across the bars to pick a date range; the frame colours count only what falls inside it.</div>
           <div class="date-row">
             <input type="date" id="f-date-start" aria-label="First acquisition date">
             <span style="color:var(--text-dim);font-size:11px;">to</span>
@@ -985,19 +1312,24 @@ BODY_HTML = r"""<body>
       <div class="section">
         <div class="section-head" data-target="sec-style"><span>Frame Color / Opacity</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-style">
-          <label>Color frames by</label>
-          <select id="color-by">
+          <div class="cb-tabs" id="sb-tabs" role="tablist" style="margin:2px 0 6px;">
+            <button type="button" data-sbtab="1" class="active">Color by</button>
+            <button type="button" data-sbtab="2">Style</button>
+          </div>
+          <select id="color-by" hidden aria-hidden="true">
             <option value="passDirection">Pass Direction</option>
-            <option value="gslc_count" selected>GSLC acquisitions in CMR (default)</option>
-            <option value="n_duplicate">Duplicate granules (same date &amp; mode)</option>
-            <option value="cons_mode">Consistent mode</option>
-            <option value="cons_cov">Consistent coverage (full/partial)</option>
-            <option value="n_modes">Distinct modes per frame</option>
+            <option data-product="gslc" value="gslc_count" selected>GSLC acquisitions in CMR (default)</option>
+            <option data-product="gslc" value="n_duplicate">Duplicate granules (same date &amp; mode)</option>
+            <option data-product="gslc" value="cons_mode">Consistent mode</option>
+            <option data-product="gslc" value="cons_cov">Consistent coverage (full/partial)</option>
+            <option data-product="gslc" value="n_modes">Distinct modes per frame</option>
+            <option value="rollout" id="opt-rollout" hidden>Rollout option (earliest)</option>
             <option value="blackout_months" id="opt-blackout" hidden>Blackout duration (months)</option>
-            <option value="gslc_modes">GSLC mode (most common)</option>
-            <option value="gslc_pols">GSLC polarization (most common)</option>
-            <option value="gunw_count" id="opt-gunw" hidden>GUNW interferograms</option>
-            <option value="gunw_net" id="opt-gunw-net" hidden>GUNW network (connected / disconnected)</option>
+            <option value="blackout_month" id="opt-blackout-month" hidden>Blackout share of a month</option>
+            <option data-product="gslc" value="gslc_modes">GSLC mode (most common)</option>
+            <option data-product="gslc" value="gslc_pols">GSLC polarization (most common)</option>
+            <option data-product="gunw" value="gunw_count" id="opt-gunw" hidden>GUNW interferograms</option>
+            <option data-product="gunw" value="gunw_net" id="opt-gunw-net" hidden>GUNW network (connected / disconnected)</option>
             <option value="flag_j" class="opt-flag" hidden>Flag: joint observation</option>
             <option value="flag_f" class="opt-flag" hidden>Flag: full frame</option>
             <option value="flag_o" class="opt-flag" hidden>Flag: orbit type</option>
@@ -1005,21 +1337,57 @@ BODY_HTML = r"""<body>
             <option value="flag_m" class="opt-flag" hidden>Flag: mixed mode</option>
             <option value="flag_d" class="opt-flag" hidden>Flag: dithered</option>
           </select>
-          <label>Fill opacity (<span id="opacity-val">32</span>%)</label>
-          <input type="range" id="fill-opacity" min="0" max="100" value="32">
-          <button class="btn small" id="btn-reset-style" style="margin-top:8px;">Reset to default</button>
-          <div id="colorby-legend" style="margin-top:8px;"></div>
+          <div id="sb-tab-options">
+            <div id="sb-options"></div>
+            <div id="bo-month-row" hidden>
+              <label>Month</label>
+              <select id="bo-month"></select>
+            </div>
+            <div class="stat-line" id="colorby-scope">Counts follow the mode / polarization chips and the date range.</div>
+            <div class="cb-legend" id="sb-legend"></div>
+          </div>
+          <div id="sb-tab-style" hidden>
+            <div class="cb-slider">Fill <input type="range" id="fill-opacity" min="0" max="100" value="32"><b><span id="opacity-val">32</span>%</b></div>
+            <div class="cb-presets" id="sb-presets"></div>
+            <div class="cb-slider">Outline <input type="range" id="outline-opacity" min="0" max="100" value="70"><b><span id="outline-val">70</span>%</b></div>
+            <div id="colorby-legend" style="margin-top:6px;"></div>
+            <button class="btn small" id="btn-reset-style" style="margin-top:8px;">Reset all to default</button>
+          </div>
         </div>
       </div>
 
 
       <div class="section">
-        <div class="section-head" data-target="sec-gslc"><span id="chips-title">GSLC Mode / Polarization</span><span class="chev">&#9660;</span></div>
+        <div class="section-head" data-target="sec-gslc"><span id="chips-title">GSLC Mode / Polarization / CRID</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-gslc">
           <label>Mode (click to toggle)</label>
           <div class="chip-grid" id="chips-gslc-mode"></div>
           <label>Polarization</label>
           <div class="chip-grid" id="chips-gslc-pol"></div>
+          <label>CRID (composite release ID in the file name; none = all)</label>
+          <div class="chip-grid" id="chips-crid"></div>
+        </div>
+      </div>
+
+
+      <div class="section collapsed" id="sec-rollout-wrap" hidden>
+        <div class="section-head" data-target="sec-rollout"><span>Rollout Regions</span><span class="chev">&#9660;</span></div>
+        <div class="section-body" id="sec-rollout">
+          <div class="stat-line" id="rollout-note"></div>
+          <div id="rollout-list"></div>
+          <div class="stat-line">Click an option to show only its frames; frame counts follow the other filters.</div>
+        </div>
+      </div>
+
+
+      <div class="section collapsed" id="sec-bo-wrap" hidden>
+        <div class="section-head" data-target="sec-bo"><span>Blackout by Month</span><span class="chev">&#9660;</span></div>
+        <div class="section-body" id="sec-bo">
+          <div class="stat-line">Frames shown with each calendar month excluded by their blackout window. Dark: at least half the month; light: any part of it. Click a month to colour the map by it.</div>
+          <div id="bo-wrap" style="position:relative;margin-top:6px;">
+            <div id="bo-chart"></div>
+            <div class="chart-tip" id="bo-tip" hidden></div>
+          </div>
         </div>
       </div>
 
@@ -1078,7 +1446,9 @@ BODY_HTML = r"""<body>
       <button class="btn primary" id="btn-export-geojson">Export GeoJSON</button>
     </div>
   </div>
+  <div id="sidebar-backdrop"></div>
   <div id="map">
+    <button id="menu-btn" title="Filters and settings" aria-label="Open filters and settings">&#9776;</button>
     <div id="product-ctrl" role="group" aria-label="Product shown on the map" hidden>
       <button type="button" data-product="gslc" class="active">GSLC</button>
       <button type="button" data-product="gunw">GUNW</button>
@@ -1103,6 +1473,45 @@ BODY_HTML = r"""<body>
       <label><input type="radio" name="basemap" value="sat"> Satellite</label>
       <label><input type="radio" name="basemap" value="sat2"> Satellite-H</label>
     </div>
+    <div class="overlay-panel" id="colorby-panel" hidden>
+      <div class="overlay-head">
+        <div class="cb-tabs" role="tablist">
+          <button type="button" data-tab="1" class="active">Color by</button>
+          <button type="button" data-tab="2">Style</button>
+        </div>
+        <button class="li-x" data-close="colorby" title="Close the panel (the legend stays on the map)">&times;</button>
+      </div>
+      <div class="cb-note" id="cb-overlay-note" hidden>Frame colours are hidden under the rainy / snow layer.
+        <button class="btn small" id="cb-overlay-off">Show them</button></div>
+      <div id="cb-options"></div>
+      <div id="cb-style" hidden>
+        <div class="pop-title" id="cb-style-title"></div>
+        <div class="cb-slider">Fill <input type="range" id="cb-fill" min="0" max="100"><b id="cb-fill-val"></b></div>
+        <div class="cb-presets" id="cb-presets"></div>
+        <div class="cb-slider">Outline <input type="range" id="cb-outline" min="0" max="100"><b id="cb-outline-val"></b></div>
+        <div id="cb-month-row" hidden><div class="month-chips" id="cb-months"></div></div>
+        <div id="cb-style-controls" style="margin-top:6px;"></div>
+        <button class="btn small" id="cb-reset" style="margin-top:8px;">Reset this option</button>
+      </div>
+      <div class="cb-legend" id="cb-legend"></div>
+    </div>
+    <div id="map-legend" hidden title="Click to change the colouring">
+      <div class="ml-head" title="Drag to move"><span><span class="ml-grip">&#8942;&#8942;</span><span id="ml-title"></span></span><button class="li-x" id="ml-close" title="Hide the legend">&times;</button></div>
+      <div id="ml-body"></div>
+    </div>
+    <div class="overlay-panel" id="snow-panel" hidden>
+      <div class="overlay-head"><span>Rainy / snow season blackouts</span><button class="li-x" data-close="snow" title="Close">&times;</button></div>
+      <div class="pop-row">Dates DISP drops for seasonal decorrelation: winter snow cover, or the peak rainy season (Aug-Nov) over Central America, as in DISP-S1. <b>YR</b> shades each frame by the share of the year blacked out; a month, by the share of that month.</div>
+      <div class="month-chips" id="snow-months"></div>
+      <div class="snow-ramp"></div>
+      <div class="cmap-labels"><span id="snow-lo">0%</span><span id="snow-unit">share of the year blacked out</span><span id="snow-hi">100%</span></div>
+      <div class="stat-line" id="snow-stat"></div>
+    </div>
+    <div class="overlay-panel" id="rollout-panel" hidden>
+      <div class="overlay-head"><span>Rollout regions</span><button class="li-x" data-close="rollout" title="Close">&times;</button></div>
+      <div class="pop-row" id="rollout-panel-note"></div>
+      <div id="rollout-panel-list"></div>
+    </div>
     <div id="chart-modal" hidden>
       <div class="chart-card">
         <div class="chart-head">
@@ -1111,6 +1520,7 @@ BODY_HTML = r"""<body>
             <div class="chart-sub" id="chart-sub"></div>
           </div>
           <label class="chart-flag-ctl" id="chart-flags-ctl" hidden><input type="checkbox" id="chart-flags"> Show flags</label>
+          <button class="li-x" id="chart-expand" title="Expand">&#10530;</button>
           <button class="li-x" id="chart-close" title="Close">&times;</button>
         </div>
         <div id="chart-body"></div>
@@ -1127,9 +1537,13 @@ APP_JS = r"""
   const PALETTE = ["#ff5d5d","#ff8a4d","#ffd24d","#7ee787","#4dd2c9","#4da3ff","#a389ff","#ff6fc7","#ffffff"];
   let currentColor = PALETTE[0];
   let applyColorBy = function(){};   // reassigned after map layers exist
+  let paintFrames = function(){};    // repaints the map only, no legend redraw
+  const frameStyle = {fill: 32, outline: 70};   // percent
   let refreshSummary = function(){}; // reassigned after DOM ready
   const selected = new Map();        // id -> {feature, color}
   let product = "gslc";              // "gslc" or "gunw", flipped by the product switch
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const DAY_MS = 86400000;
 
   // ---------- derive filter option lists ----------
   function uniqSorted(arr){ return Array.from(new Set(arr)).sort(); }
@@ -1148,7 +1562,28 @@ APP_JS = r"""
   const allModesGunw = uniqSorted(FRAME_DATA.features.flatMap(f => asArray(f.properties.gunw_modes)));
   const allPolsGunw  = uniqSorted(FRAME_DATA.features.flatMap(f => asArray(f.properties.gunw_pols)));
   // Each product keeps its own chip selection across the GSLC / GUNW switch.
-  const activeChips = { gslcMode:new Set(), gslcPol:new Set(), gunwMode:new Set(), gunwPol:new Set() };
+  const activeChips = { gslcMode:new Set(), gslcPol:new Set(), gunwMode:new Set(), gunwPol:new Set(),
+                        gslcCrid:new Set(), gunwCrid:new Set() };
+
+  // The CRID (composite release ID, e.g. P05023) names the processing release a
+  // granule came from; it sits at a fixed field of the GSLC and GUNW names, the
+  // same ones ``nisar_db.filenames`` parses.
+  function cridOf(gid, field){
+    const parts = String(gid || "").split("_");
+    return parts.length > field ? parts[field] : "";
+  }
+  FRAME_DATA.features.forEach(f=>{
+    const p = f.properties;
+    const granules = Array.isArray(p.granules) ? p.granules : [];
+    granules.forEach(g=>{ g.crid = cridOf(g.gid, 13); });
+    p.gslc_crids = uniqSorted(granules.map(g=>g.crid).filter(Boolean));
+    const ifgs = asArray(p.gunw_ifgs);
+    ifgs.forEach(g=>{ g.crid = cridOf(g.gid, 15); });
+    if (typeof p.gunw_ifgs === "string") p.gunw_ifgs = ifgs;
+    p.gunw_crids = uniqSorted(ifgs.map(g=>g.crid).filter(Boolean));
+  });
+  const allCridsGslc = uniqSorted(FRAME_DATA.features.flatMap(f => f.properties.gslc_crids));
+  const allCridsGunw = uniqSorted(FRAME_DATA.features.flatMap(f => f.properties.gunw_crids));
 
   // Single-value derived keys for the array-valued mode/pol properties.
   FRAME_DATA.features.forEach(f=>{
@@ -1161,17 +1596,64 @@ APP_JS = r"""
   // ---------- color-by support ----------
   const CAT_PALETTE = ["#4da3ff","#ff8a4d","#7ee787","#ff5d5d","#a389ff","#ffd24d","#4dd2c9","#ff6fc7",
                        "#f0b429","#6ee7b7","#93c5fd","#fca5a5","#c4b5fd","#fda4af","#86efac","#fcd34d"];
-  // Sequential ramp (low -> high) for numeric color-by fields.
-  const SEQ_PALETTE = ["#2c7bb6","#00a6ca","#00ccbc","#90eb9d","#ffff8c","#f9d057","#f29e2e","#e76818","#d7191c"];
+  // Ramps for numeric color-by fields, 9 evenly spaced stops each, shown in the
+  // picker under the group headings of COLORMAP_GROUPS. "OPERA" is the
+  // viewer's original ramp. The perceptual and diverging maps are the
+  // matplotlib, cmocean (Thyng et al., 2016) and Scientific colour maps
+  // (Crameri, 2018, doi:10.5281/zenodo.1243862) samples the geepers grid
+  // browser offers; the single- and multi-hue ones are ColorBrewer's 9-class
+  // schemes (Harrower & Brewer, 2003, doi:10.1179/000870403235002042).
+  const COLORMAPS = {
+    OPERA:   ["#2c7bb6","#00a6ca","#00ccbc","#90eb9d","#ffff8c","#f9d057","#f29e2e","#e76818","#d7191c"],
+    Viridis: ["#440154","#472d7b","#3b528b","#2c728e","#21918c","#28ae80","#5ec962","#addc30","#fde725"],
+    Turbo:   ["#30123b","#4458cb","#3e9bfe","#18d6cb","#46f884","#a2fc3c","#e1dd37","#fea130","#ef5a11"],
+    Magma:   ["#000004","#1d1147","#51127c","#822681","#b73779","#e75263","#fc8961","#fec488","#fcfdbf"],
+    Plasma:  ["#0d0887","#4c02a1","#7e03a8","#aa2395","#cc4778","#e66c5c","#f89540","#fdc527","#f0f921"],
+    Inferno: ["#000004","#210c4a","#57106e","#8a226a","#bc3754","#e45a31","#f98e09","#f9cb35","#fcffa4"],
+    Cividis: ["#00224e","#1a386f","#434e6c","#61656f","#7d7c78","#9b9476","#bcae6c","#dec958","#fee838"],
+    Batlow:  ["#011959","#114360","#226061","#4d734d","#828231","#c09036","#f29d6d","#fdb4b6","#faccfa"],
+    Thermal: ["#042333","#19337c","#563b9c","#83508f","#b15f82","#df7064","#f99341","#f9c641","#e8fa5b"],
+    Spectral:["#5e4fa2","#3d95b8","#86cfa5","#d6ee9b","#ffffbe","#fed481","#f98e52","#dd4a4c","#9e0142"],
+    RdYlBu:  ["#313695","#4f81ba","#8ec2dc","#d1ecf4","#feffc0","#fed485","#f98e52","#de402e","#a50026"],
+    Greys:   ["#ffffff","#f0f0f0","#d9d9d9","#bdbdbd","#959595","#727272","#515151","#242424","#000000"],
+    Blues:   ["#f7fbff","#deebf7","#c6dbef","#9ecae1","#6baed6","#4292c6","#2171b5","#08519c","#08306b"],
+    Greens:  ["#f7fcf5","#e5f5e0","#c7e9c0","#a1d99b","#74c476","#41ab5d","#238b45","#006d2c","#00441b"],
+    Oranges: ["#fff5eb","#fee6ce","#fdd0a2","#fdae6b","#fd8d3c","#f16913","#d94801","#a63603","#7f2704"],
+    Reds:    ["#fff5f0","#fee0d2","#fcbba1","#fc9272","#fb6a4a","#ef3b2c","#cb181d","#a50f15","#67000d"],
+    Purples: ["#fcfbfd","#efedf5","#dadaeb","#bcbddc","#9e9ac8","#807dba","#6a51a3","#54278f","#3f007d"],
+    YlOrRd:  ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#e31a1c","#bd0026","#800026"],
+    YlOrBr:  ["#ffffe5","#fff7bc","#fee391","#fec44f","#fe9929","#ec7014","#cc4c02","#993404","#662506"],
+    YlGnBu:  ["#ffffd9","#edf8b1","#c7e9b4","#7fcdbb","#41b6c4","#1d91c0","#225ea8","#253494","#081d58"],
+    GnBu:    ["#f7fcf0","#e0f3db","#ccebc5","#a8ddb5","#7bccc4","#4eb3d3","#2b8cbe","#0868ac","#084081"],
+    PuBuGn:  ["#fff7fb","#ece2f0","#d0d1e6","#a6bddb","#67a9cf","#3690c0","#02818a","#016c59","#014636"],
+    RdPu:    ["#fff7f3","#fde0dd","#fcc5c0","#fa9fb5","#f768a1","#dd3497","#ae017e","#7a0177","#49006a"],
+    RdBu:    ["#b2182b","#d6604d","#f4a582","#fddbc7","#f7f7f7","#d1e5f0","#92c5de","#4393c3","#2166ac"],
+    BrBG:    ["#8c510a","#bf812d","#dfc27d","#f6e8c3","#f5f5f5","#c7eae5","#80cdc1","#35978f","#01665e"],
+    PuOr:    ["#7f3b08","#be630a","#ef9e3c","#fed7a2","#f6f6f7","#cecde4","#988dbe","#5d3790","#2d004b"],
+    PiYG:    ["#8e0152","#cb3289","#e897c4","#fad6ea","#f7f7f6","#d9f0bc","#9acd61","#589b28","#276419"],
+    Coolwarm:["#3b4cc0","#6282ea","#8db0fe","#b9d0f9","#dddcdc","#f5c4ac","#f4987a","#dd5f4b","#b40426"],
+    Vik:     ["#001261","#034481","#307da6","#94bed2","#ece5e0","#dbaa8d","#c27041","#912d06","#590008"],
+    Roma:    ["#7e1700","#9d5818","#b68c32","#d0ca72","#c0eac3","#76d1d7","#389cc6","#2269b0","#033198"],
+    Balance: ["#181c43","#2548b0","#3888ba","#98bac5","#f1eceb","#d7a290","#bf573a","#8d1029","#3c0912"]
+  };
+  const COLORMAP_GROUPS = [
+    ["Perceptual", ["OPERA","Viridis","Turbo","Magma","Plasma","Inferno","Cividis","Batlow","Thermal"]],
+    ["Single hue", ["Blues","Greens","Oranges","Reds","Purples","Greys"]],
+    ["Multi hue", ["YlOrRd","YlOrBr","YlGnBu","GnBu","PuBuGn","RdPu"]],
+    ["Diverging", ["Spectral","RdYlBu","RdBu","BrBG","PuOr","PiYG","Coolwarm","Vik","Roma","Balance"]]
+  ];
+  const DEFAULT_CMAP = "OPERA";
 
   const COLOR_BY_FIELDS = {
     passDirection: { label:"Pass Direction",      key:"passDirection", kind:"cat" },
     gslc_count:    { label:"GSLC acquisitions in CMR", key:"gslc_count_sel", kind:"num" },
-    n_duplicate:   { label:"Duplicate granules",   key:"n_duplicate",   kind:"num" },
+    n_duplicate:   { label:"Duplicate granules",   key:"n_duplicate_sel", kind:"num" },
     cons_mode:     { label:"Consistent mode",      key:"cons_mode",     kind:"cat" },
     cons_cov:      { label:"Consistent coverage",  key:"cons_cov",      kind:"cat" },
-    n_modes:       { label:"Distinct modes",       key:"n_modes",       kind:"num" },
+    n_modes:       { label:"Distinct modes",       key:"n_modes_sel",   kind:"num" },
+    rollout:       { label:"Rollout option",       key:"_rollout",      kind:"cat" },
     blackout_months:{ label:"Blackout months",     key:"blackout_months", kind:"num" },
+    blackout_month:{ label:"Blacked out (%)",      key:"_bo_sel",       kind:"num" },
     gslc_modes:    { label:"GSLC mode",            key:"_gslcMode",     kind:"cat" },
     gslc_pols:     { label:"GSLC polarization",    key:"_gslcPol",      kind:"cat" },
     gunw_count:    { label:"GUNW interferograms",  key:"gunw_count_sel", kind:"num" },
@@ -1183,6 +1665,14 @@ APP_JS = r"""
     flag_m:        { label:"Mixed mode",           key:"_flag_m",       kind:"cat" },
     flag_d:        { label:"Dithered",             key:"_flag_d",       kind:"cat" }
   };
+  // These counts change with the chips and the date range; the scope note
+  // under the colour-by select is shown only for them.
+  const SELECTION_FIELDS = new Set(["gslc_count","n_duplicate","n_modes","gunw_count"]);
+
+  // Rollout options keep a fixed colour each, earliest first, so the map reads
+  // the same whatever subset is shown.
+  const ROLLOUT_PALETTE = ["#e5484d","#ff8a4d","#ffd24d","#7ee787","#4dd2c9","#4da3ff","#a389ff","#ff6fc7"];
+  const ROLLOUT_OPTIONS = Array.isArray(META.rollout_options) ? META.rollout_options : [];
 
   const baseColorMapsCache = {};
   function baseColorMap(propKey){
@@ -1194,6 +1684,9 @@ APP_JS = r"""
       m = new Map([["F","#4da3ff"],["P","#ff8a4d"],["none","#555a61"]]);
     } else if (propKey === "_gunwNet") {
       m = new Map([["connected","#7ee787"],["disconnected","#e5484d"],["no GUNW","#6b6b6b"]]);
+    } else if (propKey === "_rollout") {
+      m = new Map(ROLLOUT_OPTIONS.map((o,i)=>[o, ROLLOUT_PALETTE[i % ROLLOUT_PALETTE.length]]));
+      m.set("none", "#555a61");
     } else if (propKey === "_flag_o") {
       m = orbitColorMap();
     } else if (propKey.startsWith("_flag_")) {
@@ -1207,25 +1700,48 @@ APP_JS = r"""
     return m;
   }
 
-  // A viewer built before a field existed still has to render: an all-missing
-  // field collapses to a flat colour rather than NaN stops MapLibre rejects.
+  // Numeric ramps auto-fit the frames currently shown, so narrowing a filter
+  // stretches the ramp over what is left. A viewer built before a field existed
+  // still has to render: an all-missing field collapses to a flat colour rather
+  // than NaN stops MapLibre rejects.
+  let shownFeatures = FRAME_DATA.features;
   function numericStops(propKey){
-    const vals = FRAME_DATA.features.map(f=>Number(f.properties[propKey])).filter(Number.isFinite);
+    const vals = shownFeatures.map(f=>Number(f.properties[propKey])).filter(Number.isFinite);
     if (!vals.length) return {lo:0, hi:0};
-    const lo = Math.min(...vals), hi = Math.max(...vals);
+    let lo = Infinity, hi = -Infinity;
+    vals.forEach(v=>{ if (v < lo) lo = v; if (v > hi) hi = v; });
     return {lo, hi};
+  }
+
+  // Per colour-by field: colormap, invert, and a fixed range (null = auto).
+  const numStyle = {};
+  function styleOf(fieldName){
+    if (!numStyle[fieldName]) numStyle[fieldName] = {cmap:DEFAULT_CMAP, invert:false, vmin:null, vmax:null};
+    return numStyle[fieldName];
+  }
+  function activeStops(fieldName){
+    const st = styleOf(fieldName);
+    const stops = COLORMAPS[st.cmap] || COLORMAPS[DEFAULT_CMAP];
+    return st.invert ? [...stops].reverse() : stops;
+  }
+  function fieldRange(fieldName){
+    const st = styleOf(fieldName);
+    const auto = numericStops(COLOR_BY_FIELDS[fieldName].key);
+    return {
+      lo: st.vmin == null ? auto.lo : st.vmin,
+      hi: st.vmax == null ? auto.hi : st.vmax,
+      fixed: st.vmin != null || st.vmax != null
+    };
   }
 
   function colorExpression(fieldName){
     const info = COLOR_BY_FIELDS[fieldName];
     if (info.kind === "num") {
-      const {lo, hi} = numericStops(info.key);
+      const {lo, hi} = fieldRange(fieldName);
+      const stops = activeStops(fieldName);
+      if (!(hi > lo)) return stops[Math.floor(stops.length/2)];
       const expr = ["interpolate", ["linear"], ["to-number", ["get", info.key]]];
-      if (lo === hi) { return SEQ_PALETTE[Math.floor(SEQ_PALETTE.length/2)]; }
-      SEQ_PALETTE.forEach((col,i)=>{
-        const v = lo + (hi - lo) * (i / (SEQ_PALETTE.length - 1));
-        expr.push(v, col);
-      });
+      stops.forEach((col,i)=> expr.push(lo + (hi - lo) * (i / (stops.length - 1)), col));
       return expr;
     }
     const cmap = baseColorMap(info.key);
@@ -1235,37 +1751,112 @@ APP_JS = r"""
     return expr;
   }
 
-  function renderColorByLegend(fieldName){
+  function fmtNum(v){ return Number.isInteger(v) ? String(v) : v.toFixed(1); }
+
+  // The colormap panel survives the legend being redrawn on every filter change.
+  let cmapPopOpen = false;
+  let cmapGroupsOpen = null;   // colormap groups left open, shared by sidebar and panel
+  let cbGroupsOpen = null;     // colour-by groups left open, likewise
+
+  // Style controls for the current colour-by field, drawn into ``el``. The
+  // sidebar and the map's colour panel both draw them, so every element is
+  // found by its role inside ``el`` rather than by a page-wide id. In the
+  // sidebar the colormap choices fold under the colorbar (``collapsible``); in
+  // the map panel they are always open.
+  function renderStyleControls(el, fieldName, collapsible){
     const info = COLOR_BY_FIELDS[fieldName];
-    const el = document.getElementById("colorby-legend");
+    const q = role => el.querySelector(`[data-role="${role}"]`);
     el.innerHTML = "";
     if (info.kind === "num") {
-      const {lo, hi} = numericStops(info.key);
-      const grad = SEQ_PALETTE.join(",");
+      const st = styleOf(fieldName);
+      const {lo, hi, fixed} = fieldRange(fieldName);
+      const grad = activeStops(fieldName).join(",");
+      const auto = numericStops(info.key);
+      // Each group folds and starts closed (its header names the current
+      // colormap); whatever the user opens or closes stays so across redraws.
+      if (!cmapGroupsOpen) cmapGroupsOpen = new Set();
+      const swatches = COLORMAP_GROUPS.map(([title, names])=>
+        `<details class="cmap-group" data-group="${title}"${cmapGroupsOpen.has(title) ? " open" : ""}>`+
+        `<summary>${title} <span class="cmap-count">${names.length}</span>`+
+        `${names.includes(st.cmap) ? ` <span class="cmap-cur">&middot; ${st.cmap}</span>` : ""}</summary>`+
+        `<div class="cmap-grid">`+names.map(name=>
+          `<button type="button" data-cmap="${name}" class="${name === st.cmap ? "active" : ""}">${name}`+
+          `<span class="cmap-swatch" style="background:linear-gradient(90deg,${COLORMAPS[name].join(",")})"></span></button>`).join("")+
+        `</div></details>`).join("");
+      const open = !collapsible || cmapPopOpen;
       el.innerHTML =
-        `<div style="height:12px;border-radius:4px;background:linear-gradient(90deg,${grad});"></div>`+
-        `<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim);margin-top:2px;">`+
-        `<span>${lo}</span><span>${info.label}</span><span>${hi}</span></div>`;
+        `<div class="${collapsible ? "cmap-bar-click" : ""}" data-role="bar"${collapsible ? ` title="Click to change the colormap and range"` : ""}>`+
+        `<div class="cmap-ramp" style="background:linear-gradient(90deg,${grad});"></div>`+
+        `<div class="cmap-labels"><span>${fmtNum(lo)}</span><span>${info.label}${fixed ? " (fixed)" : ""}</span><span>${fmtNum(hi)}</span></div></div>`+
+        `<div class="cmap-pop" data-role="pop"${open ? "" : " hidden"}>`+
+        `<div class="cmap-groups">${swatches}</div>`+
+        `<div class="cmap-range">min <input type="number" data-role="vmin" step="any" value="${st.vmin == null ? "" : st.vmin}" placeholder="${fmtNum(auto.lo)}">`+
+        `max <input type="number" data-role="vmax" step="any" value="${st.vmax == null ? "" : st.vmax}" placeholder="${fmtNum(auto.hi)}">`+
+        `<button class="btn small" data-role="auto" title="Fit the frames shown">Auto</button></div>`+
+        `<div class="cmap-range"><label><input type="checkbox" data-role="invert"${st.invert ? " checked" : ""}> invert</label>`+
+        `<span style="margin-left:auto">empty range = fit the frames shown</span></div>`+
+        `</div>`;
+      if (collapsible) q("bar").addEventListener("click", ()=>{
+        cmapPopOpen = !cmapPopOpen;
+        q("pop").hidden = !cmapPopOpen;
+      });
+      el.querySelectorAll("[data-cmap]").forEach(b=> b.addEventListener("click", ()=>{
+        st.cmap = b.dataset.cmap; applyColorBy();
+      }));
+      el.querySelectorAll("details.cmap-group").forEach(d=> d.addEventListener("toggle", ()=>{
+        if (d.open) cmapGroupsOpen.add(d.dataset.group); else cmapGroupsOpen.delete(d.dataset.group);
+      }));
+      q("invert").addEventListener("change", e=>{ st.invert = e.target.checked; applyColorBy(); });
+      const readBound = role=>{
+        const v = q(role).value.trim();
+        return v === "" || !Number.isFinite(Number(v)) ? null : Number(v);
+      };
+      ["vmin","vmax"].forEach(role=> q(role).addEventListener("change", ()=>{
+        st.vmin = readBound("vmin"); st.vmax = readBound("vmax"); applyColorBy();
+      }));
+      q("auto").addEventListener("click", ()=>{ st.vmin = null; st.vmax = null; applyColorBy(); });
       return;
     }
     const colorMap = baseColorMap(info.key);
+    const grid = document.createElement("div");
+    grid.className = "cat-grid";
     colorMap.forEach((color, val)=>{
-      const row = document.createElement("div");
-      row.className = "check-row"; row.style.margin = "2px 0";
+      const row = document.createElement("label");
+      row.className = "cat-row";
       const picker = document.createElement("input");
       picker.type = "color"; picker.className = "legend-color"; picker.value = color;
       picker.title = `Recolour ${val}`;
-      picker.addEventListener("input", ()=>{
-        colorMap.set(val, picker.value);   // the cached map is what colorExpression reads
-        applyColorBy();
-      });
+      // The map follows the picker live; the legends are redrawn only once a
+      // colour is settled, so the open picker is not torn down under the cursor.
+      picker.addEventListener("input", ()=>{ colorMap.set(val, picker.value); paintFrames(); });
+      picker.addEventListener("change", ()=>{ colorMap.set(val, picker.value); applyColorBy(); });
       const label = document.createElement("span");
-      label.style.cssText = "font-size:11px;color:var(--text-dim)";
       label.textContent = val;
       row.appendChild(picker);
       row.appendChild(label);
-      el.appendChild(row);
+      grid.appendChild(row);
     });
+    el.appendChild(grid);
+  }
+
+  // A compact, read-only legend: the ramp with its range, or the categories.
+  function legendHtml(fieldName){
+    const info = COLOR_BY_FIELDS[fieldName];
+    if (info.kind === "num") {
+      const {lo, hi} = fieldRange(fieldName);
+      return `<div class="cmap-ramp" style="background:linear-gradient(90deg,${activeStops(fieldName).join(",")});"></div>`+
+             `<div class="cmap-labels"><span>${fmtNum(lo)}</span><span>${fmtNum(hi)}</span></div>`;
+    }
+    return `<div class="mini-cats">`+Array.from(baseColorMap(info.key)).map(([v,c])=>
+      `<span><i style="background:${c}"></i>${v}</span>`).join("")+`</div>`;
+  }
+
+  // A row's preview in the option list: its ramp, or its first few colours.
+  function previewHtml(fieldName){
+    const info = COLOR_BY_FIELDS[fieldName];
+    if (info.kind === "num") return `<span class="cb-prev" style="background:linear-gradient(90deg,${activeStops(fieldName).join(",")})"></span>`;
+    return `<span class="cb-prev cb-prev-cat">`+Array.from(baseColorMap(info.key).values()).slice(0,5)
+      .map(c=>`<i style="background:${c}"></i>`).join("")+`</span>`;
   }
 
   // ---------- filter chips ----------
@@ -1296,7 +1887,9 @@ APP_JS = r"""
     const polSet = gunw ? activeChips.gunwPol : activeChips.gslcPol;
     buildChips("chips-gslc-mode", gunw ? allModesGunw : allModesGslc, modeSet, Array.from(modeSet));
     buildChips("chips-gslc-pol", gunw ? allPolsGunw : allPolsGslc, polSet, Array.from(polSet));
-    document.getElementById("chips-title").textContent = `${gunw ? "GUNW" : "GSLC"} Mode / Polarization`;
+    const cridSet = gunw ? activeChips.gunwCrid : activeChips.gslcCrid;
+    buildChips("chips-crid", gunw ? allCridsGunw : allCridsGslc, cridSet, Array.from(cridSet));
+    document.getElementById("chips-title").textContent = `${gunw ? "GUNW" : "GSLC"} Mode / Polarization / CRID`;
   }
   function buildGslcChips(){
     Object.values(activeChips).forEach(s=>s.clear());
@@ -1347,13 +1940,19 @@ APP_JS = r"""
     const refs = asArray(p.reference_dates);
     return `<div class="pop-row">Ref resets: ${refs.length ? refs.join(", ") : "default"}</div>`;
   }
+  // The popup keeps blackout to one line and a month strip: each month is shaded
+  // by the share its window excludes and counts the frame's acquisitions (GSLC)
+  // or pairs (GUNW) in it; tapping a month lists them underneath. The per-year
+  // windows, all alike, are in the strip's tooltip rather than a list.
   function blackoutDetailBlock(p){
-    let html = "";
-    if (META.has_blackout && p.has_blackout) {
-      const ranges = asArray(p.blackout_ranges).map(r=>`<div class="granule-row">${r}</div>`).join("");
-      html += `<div class="pop-row" style="margin-top:6px;">Blackout windows (${p.blackout_label}, ${p.blackout_months} mo):</div>`+
-              `<div class="granule-list">${ranges}</div>`;
-    }
+    const counts = new Array(12).fill(0);
+    monthEntries(p).forEach(en=> new Set(en.months).forEach(m=>{ if (m >= 0) counts[m]++; }));
+    const what = product === "gunw" ? "pairs" : "acquisitions";
+    let head = "By month";
+    if (META.has_blackout) head = p.has_blackout ? `Blackout <b>${p.blackout_label}</b> &middot; ~${p._boDays} d/yr` : "Blackout: none";
+    let html = `<div class="pop-row" style="margin-top:6px;">${head} <span class="tdim">&middot; tap a month for its ${what}</span></div>`+
+      monthStripHtml(p._boShares || new Array(12).fill(0), counts, p.id, asArray(p.blackout_ranges))+
+      `<div class="month-list" hidden></div>`;
     if (META.has_reference) {
       const refs = asArray(p.reference_dates);
       html += `<div class="pop-row" style="margin-top:6px;">Reference resets: ${refs.length ? refs.join(", ") : "default (first acquisition)"}</div>`;
@@ -1361,6 +1960,206 @@ APP_JS = r"""
     return html;
   }
 
+  // A GSLC acquisition belongs to the month of its date; a GUNW pair to the
+  // months of both its dates.
+  const monthOf = d => d ? Number(String(d).slice(5, 7)) - 1 : -1;
+  function monthEntries(p){
+    if (product === "gunw") return asArray(p.gunw_ifgs).map(g=>({months: [monthOf(g.ref), monthOf(g.sec)], g}));
+    return parseGranules(p).map(g=>({months: [monthOf(g.date)], g}));
+  }
+
+  // ---------- rollout regions ----------
+  // Each frame carries the rollout options it belongs to, earliest first; the
+  // map colours it by the earliest. An empty set shows every frame.
+  const activeRollout = new Set();
+  FRAME_DATA.features.forEach(f=>{
+    const opts = asArray(f.properties.rollout);
+    f.properties._rollout = opts.length ? opts[0] : "none";
+  });
+  if (ROLLOUT_OPTIONS.length) {
+    document.getElementById("sec-rollout-wrap").hidden = false;
+    document.getElementById("opt-rollout").hidden = false;
+    const src = META.rollout_source || "";
+    document.getElementById("rollout-note").textContent = src.endsWith(".geojson")
+      ? `NISAR frames tagged with the DISP-S1 rollout options (${src}) whose S1 frames cover at least a quarter of them. A frame can sit in more than one option.`
+      : `Rollout options from ${src}.`;
+  }
+
+  function rolloutLine(p){
+    if (!ROLLOUT_OPTIONS.length) return "";
+    const opts = asArray(p.rollout), regions = asArray(p.rollout_regions);
+    return `<div class="pop-row">Rollout: ${opts.length ? `<b>${opts.join(", ")}</b>` : "none"}`+
+           `${regions.length ? ` &middot; ${regions.join(", ")}` : ""}</div>`;
+  }
+
+  function refreshRolloutList(){
+    if (!ROLLOUT_OPTIONS.length) return;
+    const base = currentFiltered({ignoreRollout:true});
+    const cmap = baseColorMap("_rollout");
+    const rows = [...ROLLOUT_OPTIONS, "none"].map(opt=>{
+      const has = f=> opt === "none" ? !asArray(f.properties.rollout).length
+                                     : asArray(f.properties.rollout).includes(opt);
+      return {opt, shown: base.filter(has).length, total: FRAME_DATA.features.filter(has).length};
+    });
+    const maxN = Math.max(1, ...rows.map(r=>r.shown));
+    const el = document.getElementById("rollout-list");
+    el.innerHTML = rows.map(r=>{
+      const off = activeRollout.size && !activeRollout.has(r.opt);
+      return `<div class="rollout-row${off ? " off" : ""}" data-opt="${r.opt}" title="Show only ${r.opt} frames (click again to clear)">`+
+        `<span class="rl">${r.opt}</span>`+
+        `<span class="bar-track"><span class="bar-fill" style="width:${r.shown/maxN*100}%;background:${cmap.get(r.opt)};"></span></span>`+
+        `<span class="bn">${r.shown}${r.shown !== r.total ? ` / ${r.total}` : ""}</span></div>`;
+    }).join("");
+  }
+  document.getElementById("rollout-list").addEventListener("click", e=>{
+    const row = e.target.closest("[data-opt]");
+    if (!row) return;
+    const opt = row.dataset.opt;
+    if (activeRollout.has(opt)) activeRollout.delete(opt); else activeRollout.add(opt);
+    applyFilters();
+  });
+
+  // ---------- blackout by calendar month ----------
+  // Share of each calendar month a frame's windows black out, averaged over the
+  // years they span. Windows wrap the new year (Oct -> May), so each one is
+  // walked month by month rather than read from its start and end months.
+  function blackoutMonthShares(ranges){
+    const covered = new Array(12).fill(0);
+    if (!ranges.length) return covered;
+    ranges.forEach(r=>{
+      const [a, b] = r.split("->").map(x=>x.trim());
+      let t = Date.parse(`${a}T00:00:00Z`);
+      const t1 = Date.parse(`${b}T00:00:00Z`);
+      while (t <= t1) {
+        const d = new Date(t);
+        const y = d.getUTCFullYear(), m = d.getUTCMonth();
+        const next = Date.UTC(y, m + 1, 1);
+        const end = Math.min(next - DAY_MS, t1);
+        covered[m] += (Math.round((end - t) / DAY_MS) + 1) / Math.round((next - Date.UTC(y, m, 1)) / DAY_MS);
+        t = end + DAY_MS;
+      }
+    });
+    return covered.map(c=> Math.min(1, c / ranges.length));
+  }
+
+  let boMonth = new Date().getUTCMonth();
+  const DAYS_IN_MONTH = [31,28,31,30,31,30,31,31,30,31,30,31];
+  let ovMonth = "yr";
+  if (META.has_blackout) {
+    FRAME_DATA.features.forEach(f=>{
+      f.properties._boShares = blackoutMonthShares(asArray(f.properties.blackout_ranges));
+      f.properties._bo_sel = Math.round(f.properties._boShares[boMonth] * 100);
+      f.properties._boDays = Math.round(f.properties._boShares.reduce((a, sh, i)=> a + sh * DAYS_IN_MONTH[i], 0));
+      f.properties._bo_ov = Math.round(f.properties._boDays / 365 * 100);
+    });
+    document.getElementById("sec-bo-wrap").hidden = false;
+    document.getElementById("opt-blackout-month").hidden = false;
+    const sel = document.getElementById("bo-month");
+    sel.innerHTML = MONTHS.map((m,i)=>`<option value="${i}">${m}</option>`).join("");
+    sel.value = String(boMonth);
+    sel.addEventListener("change", ()=> setBlackoutMonth(Number(sel.value)));
+  }
+
+  // The map overlay keeps its own month (or the whole year, the default), so
+  // stepping through it leaves the sidebar's colour-by and month chart alone.
+  function overlayShare(p){
+    const shares = p._boShares;
+    if (!shares) return 0;
+    return ovMonth === "yr" ? Math.round(p._boDays / 365 * 100) : Math.round(shares[ovMonth] * 100);
+  }
+  function setOverlayMonth(m){
+    ovMonth = m;
+    FRAME_DATA.features.forEach(f=>{ f.properties._bo_ov = overlayShare(f.properties); });
+    if (map.getSource("frames")) map.getSource("frames").setData({type:"FeatureCollection", features: shownFeatures});
+    refreshSnowPanel();
+  }
+
+  function setBlackoutMonth(m){
+    boMonth = m;
+    document.getElementById("bo-month").value = String(m);
+    FRAME_DATA.features.forEach(f=>{
+      const shares = f.properties._boShares;
+      f.properties._bo_sel = shares ? Math.round(shares[m] * 100) : 0;
+    });
+    if (map.getSource("frames")) map.getSource("frames").setData({type:"FeatureCollection", features: shownFeatures});
+    applyColorBy();
+    refreshBlackoutChart(shownFeatures);
+  }
+
+  function monthStripHtml(shares, counts, frameId, ranges){
+    const tip = ranges && ranges.length ? ` title="Blackout windows:&#10;${ranges.join("&#10;")}"` : "";
+    return `<div class="month-strip" data-frame="${frameId}"${tip}>`+MONTHS.map((m,i)=>{
+      const a = shares[i];
+      const bg = a > 0 ? `background:rgba(140,140,140,${(0.15 + 0.75 * a).toFixed(2)})` : "";
+      return `<button type="button" data-m="${i}" style="${bg}"${counts[i] ? "" : ` class="none"`} `+
+             `title="${m}: ${Math.round(a * 100)}% blacked out, ${counts[i]} in this month">`+
+             `${m[0]}<small>${counts[i]}</small></button>`;
+    }).join("")+`</div>`;
+  }
+  document.addEventListener("click", e=>{
+    const cell = e.target.closest ? e.target.closest(".month-strip [data-m]") : null;
+    if (!cell) return;
+    const strip = cell.parentElement, list = strip.nextElementSibling;
+    const was = cell.classList.contains("active");
+    strip.querySelectorAll(".active").forEach(c=>c.classList.remove("active"));
+    if (was) { list.hidden = true; return; }
+    cell.classList.add("active");
+    const m = Number(cell.dataset.m);
+    const p = idToFeature(strip.dataset.frame).properties;
+    const hits = monthEntries(p).filter(en=>en.months.includes(m)).map(en=>en.g);
+    const gunw = product === "gunw";
+    list.innerHTML = `<div class="pop-row">${MONTHS[m]}: ${hits.length} ${gunw ? "pair(s) with a date in it" : "acquisition(s)"}</div>`+
+      (hits.length ? `<div class="granule-list">${gunw ? gunwRowsHtml(hits) : granuleRowsHtml(hits)}</div>` : "");
+    list.hidden = false;
+  });
+
+  let boBins = [];
+  function refreshBlackoutChart(features){
+    if (!META.has_blackout) return;
+    const el = document.getElementById("bo-chart");
+    document.getElementById("bo-tip").hidden = true;
+    boBins = MONTHS.map((m,i)=>({m, half:0, any:0}));
+    let withBo = 0;
+    features.forEach(f=>{
+      const shares = f.properties._boShares;
+      if (!shares || !f.properties.has_blackout) return;
+      withBo++;
+      shares.forEach((a,i)=>{ if (a > 0) boBins[i].any++; if (a >= 0.5) boBins[i].half++; });
+    });
+    const W = Math.max(el.clientWidth || 300, 200), H = 92, padT = 12, padB = 16;
+    const maxN = Math.max(1, ...boBins.map(b=>b.any));
+    const slot = W / 12, bw = slot - 3;
+    const y = n => (n / maxN) * (H - padT - padB);
+    const bars = boBins.map((b,i)=>{
+      const x = (i * slot + 1.5).toFixed(1), sel = i === boMonth ? " sel" : "";
+      return `<rect class="bo-bar-any${sel}" data-i="${i}" x="${x}" y="${(H-padB-y(b.any)).toFixed(1)}" width="${bw.toFixed(1)}" height="${y(b.any).toFixed(1)}" rx="1.5"/>`+
+             `<rect class="bo-bar${sel}" data-i="${i}" x="${x}" y="${(H-padB-y(b.half)).toFixed(1)}" width="${bw.toFixed(1)}" height="${y(b.half).toFixed(1)}" rx="1.5"/>`+
+             `<text class="day-axis" x="${(i*slot + slot/2).toFixed(1)}" y="${H-4}" text-anchor="middle">${MONTHS[i][0]}</text>`;
+    }).join("");
+    el.innerHTML =
+      `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Frames blacked out per month">`+
+      `<text class="day-axis" x="0" y="9">peak ${maxN}</text>${bars}`+
+      `<line class="day-base" x1="0" x2="${W}" y1="${H-padB}" y2="${H-padB}"/></svg>`+
+      `<div class="stat-line">${withBo} of ${features.length} frames shown have a blackout window</div>`;
+  }
+  document.getElementById("bo-chart").addEventListener("mousemove", e=>{
+    const tip = document.getElementById("bo-tip");
+    const bar = e.target.closest ? e.target.closest("rect[data-i]") : null;
+    if (!bar) { tip.hidden = true; return; }
+    const b = boBins[Number(bar.dataset.i)];
+    tip.innerHTML = `<b>${b.m}</b>: ${b.half} frames at least half excluded<br><span class="tdim">${b.any} with any part excluded</span>`;
+    const wrap = tip.parentElement.getBoundingClientRect();
+    tip.hidden = false;
+    tip.style.left = `${Math.max(0, Math.min(e.clientX - wrap.left + 10, wrap.width - tip.offsetWidth))}px`;
+    tip.style.top = `${e.clientY - wrap.top - 40}px`;
+  });
+  document.getElementById("bo-chart").addEventListener("mouseleave", ()=>{ document.getElementById("bo-tip").hidden = true; });
+  document.getElementById("bo-chart").addEventListener("click", e=>{
+    const bar = e.target.closest ? e.target.closest("rect[data-i]") : null;
+    if (!bar) return;
+    document.getElementById("color-by").value = "blackout_month";
+    setBlackoutMonth(Number(bar.dataset.i));
+  });
 
   // ---------- palette ----------
   const paletteEl = document.getElementById("palette");
@@ -1408,7 +2207,8 @@ APP_JS = r"""
     return propArr.some(v => chipSet.has(v));
   }
 
-  function currentFiltered(){
+  function currentFiltered(opts){
+    const ignoreRollout = !!(opts && opts.ignoreRollout);
     const trackSet = parseIntSet(document.getElementById("f-track").value);
     const frameSet = parseIntSet(document.getElementById("f-frame").value);
     const idFilter = document.getElementById("f-id").value.trim().toLowerCase();
@@ -1424,22 +2224,28 @@ APP_JS = r"""
       if (passVal !== "all" && p.passDirection !== passVal) return false;
       if (calval && !p.isCalVal) return false;
       if (selectedOnly && !selected.has(p.id)) return false;
+      if (!ignoreRollout && activeRollout.size) {
+        const ro = asArray(p.rollout);
+        if (!(ro.length ? ro.some(o=>activeRollout.has(o)) : activeRollout.has("none"))) return false;
+      }
       if (product === "gunw") {
         if (!matchesArrayFilter(asArray(p.gunw_modes), activeChips.gunwMode)) return false;
         if (!matchesArrayFilter(asArray(p.gunw_pols), activeChips.gunwPol)) return false;
+        if (!matchesArrayFilter(p.gunw_crids || [], activeChips.gunwCrid)) return false;
       } else {
         if (!matchesArrayFilter(p.gslc_modes, activeChips.gslcMode)) return false;
         if (!matchesArrayFilter(p.gslc_pols, activeChips.gslcPol)) return false;
+        if (!matchesArrayFilter(p.gslc_crids || [], activeChips.gslcCrid)) return false;
       }
       return true;
     });
   }
 
   function applyFilters(){
-    updateSelectedGslcCounts();
-    updateSelectedGunwCounts();
+    updateSelectedCounts();
     updateFlagStatus();
     const filtered = currentFiltered();
+    shownFeatures = filtered;
     if (map.getSource("frames")) {
       map.getSource("frames").setData({type:"FeatureCollection", features: filtered});
     }
@@ -1447,49 +2253,77 @@ APP_JS = r"""
     applyColorBy();          // the GSLC-count ramp follows the mode/pol chips
     refreshSummary(filtered);
     refreshDailyChart(filtered);
+    refreshRolloutList();
+    refreshBlackoutChart(filtered);
   }
 
-  // ---------- GSLC count under the current mode / polarization chips ----------
-  // Counted the same way ``n_unique`` is on the Python side: one acquisition
-  // split into several granules is one entry, so the ramp agrees with the
-  // timeline chart and with the popup's "Unique acquisitions" row.
+  // ---------- per-frame counts under the current chips and date range ----------
+  // Acquisitions are counted the way ``n_unique`` is on the Python side: one
+  // acquisition split into several granules is one entry, so the ramp agrees
+  // with the timeline chart and the popup's "Unique acquisitions" row. The
+  // duplicates are the granules beyond that, and the distinct modes are the
+  // modes left after the filter, so all three answer "of the kind I selected,
+  // in the dates I picked" rather than "of any kind, ever".
   const GRANULE_KEYS_BY_FRAME = new Map(
     FRAME_DATA.features.map(f=>{
       const granules = Array.isArray(f.properties.granules) ? f.properties.granules : [];
-      return [f.properties.id, granules.map(g=>[g.mode, g.pol, `${g.date}|${g.mode}|${g.cov}`])];
+      return [f.properties.id, granules.map(g=>[g.mode, g.pol, g.date || "", `${g.date}|${g.mode}|${g.cov}`, g.crid || ""])];
     })
   );
 
-  function selectedGslcCount(id){
-    const rows = GRANULE_KEYS_BY_FRAME.get(id) || [];
-    const modes = activeChips.gslcMode, pols = activeChips.gslcPol;
-    const seen = new Set();
-    for (const [mode, pol, key] of rows) {
+  function dateRange(){
+    return {
+      from: document.getElementById("f-date-start").value,
+      to: document.getElementById("f-date-end").value
+    };
+  }
+
+  function selectedGslcStats(rows, modes, pols, from, to, crids){
+    const seen = new Set(), modeSet = new Set();
+    let n = 0;
+    for (const [mode, pol, date, key, crid] of rows) {
       if (modes.size && !modes.has(mode)) continue;
       if (pols.size && !pols.has(pol)) continue;
+      if (crids && crids.size && !crids.has(crid)) continue;
+      if (from && date < from) continue;
+      if (to && date > to) continue;
+      n++;
       seen.add(key);
+      modeSet.add(mode);
     }
-    return seen.size;
+    return {acq: seen.size, dup: n - seen.size, modes: modeSet.size};
   }
 
-  // Colouring by "GSLC acquisitions in CMR" reads this, so the ramp answers "how
-  // many acquisitions of the kind I selected", not "how many of any kind".
-  function updateSelectedGslcCounts(){
-    FRAME_DATA.features.forEach(f=>{
-      f.properties.gslc_count_sel = selectedGslcCount(f.properties.id);
-    });
+  // In GUNW mode the date range applies to the secondary date, the same date the
+  // over-time chart bins interferograms by.
+  function selectedGunwCount(ifgs, modes, pols, from, to, crids){
+    return ifgs.filter(g=>
+      (!modes.size || modes.has(g.mode)) && (!pols.size || pols.has(g.pol)) &&
+      (!crids || !crids.size || crids.has(g.crid)) &&
+      (!from || g.sec >= from) && (!to || g.sec <= to)).length;
   }
-  updateSelectedGslcCounts();
 
-  // The GUNW ramp follows the GUNW chips the same way.
-  function updateSelectedGunwCounts(){
-    const modes = activeChips.gunwMode, pols = activeChips.gunwPol;
+  function updateSelectedCounts(){
+    const {from, to} = dateRange();
     FRAME_DATA.features.forEach(f=>{
-      f.properties.gunw_count_sel = asArray(f.properties.gunw_ifgs).filter(g=>
-        (!modes.size || modes.has(g.mode)) && (!pols.size || pols.has(g.pol))).length;
+      const p = f.properties;
+      const st = selectedGslcStats(GRANULE_KEYS_BY_FRAME.get(p.id) || [],
+                                   activeChips.gslcMode, activeChips.gslcPol, from, to, activeChips.gslcCrid);
+      p.gslc_count_sel = st.acq;
+      p.n_duplicate_sel = st.dup;
+      p.n_modes_sel = st.modes;
+      p.gunw_count_sel = selectedGunwCount(asArray(p.gunw_ifgs),
+                                           activeChips.gunwMode, activeChips.gunwPol, from, to, activeChips.gunwCrid);
     });
   }
-  updateSelectedGunwCounts();
+  updateSelectedCounts();
+
+  function selectionRow(p){
+    const {from, to} = dateRange();
+    const span = from || to ? ` ${from || "start"} to ${to || "end"}` : "";
+    return `<div class="pop-row">Selected modes / pols / CRIDs${span}: ${p.gslc_count_sel} acq. &middot; `+
+           `${p.n_duplicate_sel} dup. &middot; ${p.n_modes_sel} mode(s)</div>`;
+  }
 
   // ---------- per-granule flags ----------
   // Collected from each product's HDF5 metadata (collect_granule_flags.py); an
@@ -1498,8 +2332,10 @@ APP_JS = r"""
     {k:"j", lane:"joint obs"}, {k:"f", lane:"full frame"}, {k:"o", lane:"orbit"},
     {k:"r", lane:"RFI mitig."}, {k:"m", lane:"mixed mode"}, {k:"d", lane:"dithered"}
   ];
-  const FLAG_YES = "#4da3ff";
-  const ORBIT_COLORS = {MOE:"#4da3ff", POE:"#7ee787", NOE:"#ffd24d", FOE:"#ff5d5d"};
+  // Green reads as "flag set" in the plot lanes and the flag colourings; the
+  // orbit lane keeps green out of its own palette so the two never meet.
+  const FLAG_YES = "#2fbf71";
+  const ORBIT_COLORS = {MOE:"#4da3ff", POE:"#4dd2c9", NOE:"#ffd24d", FOE:"#ff5d5d"};
 
   function orbitColorMap(){
     const seen = new Set();
@@ -1577,6 +2413,21 @@ APP_JS = r"""
   }
   let showFlags = false;
   let redrawChart = null;
+
+  // Charts are drawn to the card's width, so dragging the card's corner or
+  // expanding it redraws them to fit. Before the card has a size (it is still
+  // hidden on first draw) the old window-based width stands in.
+  function chartWidth(){
+    const w = document.getElementById("chart-body").clientWidth;
+    return w > 0 ? Math.max(340, Math.floor(w)) : Math.min(720, Math.max(420, window.innerWidth - 140));
+  }
+  // Vertical room for a plot: only once the card has been given a height.
+  function chartRoom(){
+    const card = document.querySelector(".chart-card");
+    if (!card.style.height && !card.classList.contains("big")) return 0;
+    const head = card.querySelector(".chart-head").offsetHeight;
+    return card.clientHeight - head - 70;
+  }
 
   // Judged on all of a frame's interferograms, as the GUNW plot is, so a frame
   // coloured disconnected is one whose plot says so.
@@ -1703,11 +2554,60 @@ APP_JS = r"""
   });
 
   ["f-date-start","f-date-end"].forEach(id=>
-    document.getElementById(id).addEventListener("change", ()=> refreshDailyChart(currentFiltered())));
+    document.getElementById(id).addEventListener("change", applyFilters));
   document.getElementById("btn-date-reset").addEventListener("click", ()=>{
     document.getElementById("f-date-start").value = "";
     document.getElementById("f-date-end").value = "";
-    refreshDailyChart(currentFiltered());
+    applyFilters();
+  });
+
+  // Drag across the bars to set the date range. The chart then redraws over
+  // just that range, so a second drag narrows it further and "All" goes back.
+  let brush = null;
+  function binAt(e){
+    const svg = document.querySelector("#daily-chart svg");
+    if (!svg || !dailyBins.length) return null;
+    const r = svg.getBoundingClientRect();
+    const frac = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 0.999999);
+    return Math.floor(frac * dailyBins.length);
+  }
+  function drawBrush(i0, i1){
+    const svg = document.querySelector("#daily-chart svg");
+    let rect = svg.querySelector(".day-brush");
+    if (!rect) {
+      rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("class", "day-brush");
+      svg.appendChild(rect);
+    }
+    const W = svg.viewBox.baseVal.width, H = svg.viewBox.baseVal.height;
+    const slot = W / dailyBins.length;
+    const a = Math.min(i0, i1), b = Math.max(i0, i1);
+    rect.setAttribute("x", a * slot); rect.setAttribute("width", (b - a + 1) * slot);
+    rect.setAttribute("y", 0); rect.setAttribute("height", H - 16);
+  }
+  document.getElementById("daily-chart").addEventListener("pointerdown", e=>{
+    const i = binAt(e);
+    if (i == null) return;
+    e.preventDefault();
+    brush = {i0: i, i1: i};
+  });
+  window.addEventListener("pointermove", e=>{
+    if (!brush) return;
+    const i = binAt(e);
+    if (i == null) return;
+    brush.i1 = i;
+    drawBrush(brush.i0, brush.i1);
+  });
+  window.addEventListener("pointerup", ()=>{
+    if (!brush) return;
+    const {i0, i1} = brush;
+    brush = null;
+    if (i0 === i1) { const r = document.querySelector("#daily-chart .day-brush"); if (r) r.remove(); return; }
+    const a = dailyBins[Math.min(i0, i1)], b = dailyBins[Math.max(i0, i1)];
+    const iso = t => new Date(t).toISOString().slice(0,10);
+    document.getElementById("f-date-start").value = iso(a.t);
+    document.getElementById("f-date-end").value = iso(b.t + (b.binDays - 1) * DAY_MS);
+    applyFilters();
   });
 
   ["f-track","f-frame","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
@@ -1721,6 +2621,9 @@ APP_JS = r"""
     document.querySelector('input[name="pass"][value="all"]').checked = true;
     document.getElementById("f-calval").checked = false;
     document.getElementById("f-selected-only").checked = false;
+    document.getElementById("f-date-start").value = "";
+    document.getElementById("f-date-end").value = "";
+    activeRollout.clear();
     buildGslcChips();
     applyFilters();
   });
@@ -1919,11 +2822,12 @@ APP_JS = r"""
     URL.revokeObjectURL(a.href);
   }
   document.getElementById("btn-export-csv").addEventListener("click", ()=>{
-    const rows = [["frame_id","track","frame","passDirection","color","gslc_count","n_unique","n_duplicate","cons_mode","cons_cov","n_modes","n_full","n_partial","isCalVal","isSNWG","isDNC"]];
+    const rows = [["frame_id","track","frame","passDirection","color","gslc_count","n_unique","n_duplicate","cons_mode","cons_cov","n_modes","n_full","n_partial","isCalVal","isSNWG","isDNC","rollout","rollout_regions"]];
     Array.from(selected.values()).forEach(e=>{
       const p = e.feature.properties;
       rows.push([p.frame_idx,p.track,p.frame,p.passDirection,e.color,p.gslc_count,p.n_unique,p.n_duplicate,p.cons_mode,p.cons_cov,
-        p.n_modes,p.n_full,p.n_partial,p.isCalVal,p.isSNWG,p.isDNC]);
+        p.n_modes,p.n_full,p.n_partial,p.isCalVal,p.isSNWG,p.isDNC,
+        asArray(p.rollout).join(";"),asArray(p.rollout_regions).join(";")]);
     });
     downloadBlob(toCsv(rows), "nisar_selected_frames.csv", "text/csv");
   });
@@ -1997,6 +2901,330 @@ APP_JS = r"""
   map.addControl(hoverInfoControl, "bottom-right");
   map.addControl(new maplibregl.GlobeControl(), "bottom-right");
 
+  // Overlay switches stack above the globe toggle. Each click steps through
+  // off -> layer -> layer + panel -> off, so the map can carry the layer
+  // without its panel in the way.
+  const overlayState = {snow:0, rollout:0, colorby:0};
+  const overlayButtons = {};
+  function overlayControl(key, title, svg){
+    return {
+      onAdd(){
+        this._wrap = document.createElement("div");
+        this._wrap.className = "maplibregl-ctrl maplibregl-ctrl-group";
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.className = "overlay-btn"; btn.title = title;
+        btn.setAttribute("aria-label", title);
+        btn.innerHTML = svg;
+        btn.addEventListener("click", ()=> setOverlay(key, (overlayState[key] + 1) % 3));
+        overlayButtons[key] = btn;
+        this._wrap.appendChild(btn);
+        return this._wrap;
+      },
+      onRemove(){ this._wrap.remove(); }
+    };
+  }
+  const HAS_ROLLOUT_DATA = typeof ROLLOUT_DATA !== "undefined" && ROLLOUT_DATA.features.length > 0;
+  if (HAS_ROLLOUT_DATA) map.addControl(overlayControl("rollout", "Rollout regions overview",
+    // A flag planted on an outlined region: a rollout area, not a map layer.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">`+
+    `<path d="M3.5 16.5 8 13l4.5 2 4-2.5 4 2.2-1.2 5.3-6 1-5.5-1.2z"/>`+
+    `<path d="M12 15V3.2"/><path d="M12 3.5h6.5l-1.6 2.3 1.6 2.4H12" fill="currentColor"/></g></svg>`), "bottom-right");
+  if (META.has_blackout) map.addControl(overlayControl("snow", "Rainy / snow season blackouts",
+    // A cloud dropping rain on one side and snow on the other.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">`+
+    `<path d="M7 14.5a4 4 0 0 1-.4-7.98A5.5 5.5 0 0 1 17.2 7a3.75 3.75 0 0 1 .3 7.5z"/>`+
+    `<path d="M8 17.2 7 20M11 17.2 10 20"/>`+
+    `<path d="M16 16.6v4.8M13.9 17.8l4.2 2.4M13.9 20.2l4.2-2.4"/></g></svg>`), "bottom-right");
+
+  // ---------- colour panel ----------
+  // Its button steps: panel -> legend on the map -> off. Inside the panel the
+  // Color by / Style tabs switch views without touching that cycle.
+  const CB_GROUPS = [
+    ["Counts", ["gslc_count","n_duplicate","n_modes","gunw_count"]],
+    ["Mode / coverage", ["cons_mode","cons_cov","gslc_modes","gslc_pols","gunw_net","passDirection"]],
+    ["Planning", ["rollout","blackout_months","blackout_month"]],
+    ["Flags", ["flag_j","flag_f","flag_o","flag_r","flag_m","flag_d"]]
+  ];
+  let cbTab = 1;   // 1: option list, 2: style
+
+  function setFrameOpacity(which, value){
+    frameStyle[which] = value;
+    paintFrames();
+    syncOpacityInputs();
+  }
+  function syncOpacityInputs(){
+    const set = (id, v)=>{ const el = document.getElementById(id); if (el && Number(el.value) !== v) el.value = v; };
+    set("fill-opacity", frameStyle.fill); set("cb-fill", frameStyle.fill);
+    set("outline-opacity", frameStyle.outline); set("cb-outline", frameStyle.outline);
+    document.getElementById("opacity-val").textContent = frameStyle.fill;
+    document.getElementById("outline-val").textContent = frameStyle.outline;
+    document.getElementById("cb-fill-val").textContent = `${frameStyle.fill}%`;
+    document.getElementById("cb-outline-val").textContent = `${frameStyle.outline}%`;
+    document.querySelectorAll("#cb-presets .chip, #sb-presets .chip").forEach(c=>
+      c.classList.toggle("active", Number(c.dataset.v) === frameStyle.fill));
+  }
+  document.getElementById("cb-presets").innerHTML =
+    [0,25,50,75,100].map(v=>`<div class="chip" data-v="${v}">${v}</div>`).join("");
+  document.getElementById("cb-presets").addEventListener("click", e=>{
+    const c = e.target.closest("[data-v]");
+    if (c) setFrameOpacity("fill", Number(c.dataset.v));
+  });
+  document.getElementById("cb-fill").addEventListener("input", e=> setFrameOpacity("fill", Number(e.target.value)));
+  document.getElementById("cb-outline").addEventListener("input", e=> setFrameOpacity("outline", Number(e.target.value)));
+
+  function selectColorBy(field){
+    const sel = document.getElementById("color-by");
+    sel.value = field;
+    applyColorBy();
+  }
+
+  // The grouped option list, drawn into both the sidebar and the map panel:
+  // only the colourings the product (and the page's data) offers, each with a
+  // preview of its colours. Clicks are handled on the containers.
+  function offeredColorings(){
+    return new Map(Array.from(document.getElementById("color-by").options).filter(o=>!o.hidden)
+      .map(o=>[o.value, o.textContent.replace(" (default)","")]));
+  }
+  function colorOptionsHtml(field){
+    const offered = offeredColorings();
+    const rows = names => names.filter(n=>offered.has(n) && COLOR_BY_FIELDS[n]).map(n=>
+      `<button type="button" class="cb-opt${n === field ? " active" : ""}" data-field="${n}">`+
+      `<span class="cb-name">${offered.get(n)}</span>${previewHtml(n)}</button>`).join("");
+    // Every group folds; the current colouring's group opens first and the
+    // user's own opening and closing then sticks across redraws.
+    if (!cbGroupsOpen) cbGroupsOpen = new Set(CB_GROUPS.filter(([, n])=>n.includes(field)).map(([t])=>t));
+    return CB_GROUPS.map(([title, names])=>{
+      const html = rows(names);
+      if (!html) return "";
+      const n = names.filter(x=>offered.has(x)).length;
+      const cur = names.includes(field) ? ` <span class="cmap-cur">&middot; ${offered.get(field)}</span>` : "";
+      return `<details class="cb-more" data-group="${title}"${cbGroupsOpen.has(title) ? " open" : ""}>`+
+             `<summary>${title} <span class="cmap-count">${n}</span>${cur}</summary>${html}</details>`;
+    }).join("");
+  }
+
+  function renderColorbyPanel(){
+    const field = document.getElementById("color-by").value;
+    const offered = offeredColorings();
+    document.getElementById("cb-options").innerHTML = colorOptionsHtml(field);
+    document.getElementById("sb-options").innerHTML = colorOptionsHtml(field);
+    document.querySelectorAll("#cb-options details.cb-more, #sb-options details.cb-more").forEach(d=>
+      d.addEventListener("toggle", ()=>{
+        if (d.open) cbGroupsOpen.add(d.dataset.group); else cbGroupsOpen.delete(d.dataset.group);
+      }));
+    document.getElementById("sb-legend").innerHTML = legendHtml(field);
+    document.getElementById("cb-style-title").textContent = offered.get(field) || COLOR_BY_FIELDS[field].label;
+    document.getElementById("cb-month-row").hidden = field !== "blackout_month";
+    if (field === "blackout_month") {
+      document.getElementById("cb-months").innerHTML = MONTHS.map((m,i)=>
+        `<div class="chip${i === boMonth ? " active" : ""}" data-m="${i}">${m}</div>`).join("");
+    }
+    renderStyleControls(document.getElementById("cb-style-controls"), field, false);
+    document.getElementById("cb-legend").innerHTML = legendHtml(field);
+    document.getElementById("cb-overlay-note").hidden = !overlayState.snow;
+  }
+  ["cb-options","sb-options"].forEach(id=> document.getElementById(id).addEventListener("click", e=>{
+    const b = e.target.closest("[data-field]");
+    if (b) selectColorBy(b.dataset.field);
+  }));
+  document.querySelectorAll("#sb-tabs [data-sbtab]").forEach(b=> b.addEventListener("click", ()=>{
+    const tab = Number(b.dataset.sbtab);
+    document.querySelectorAll("#sb-tabs [data-sbtab]").forEach(x=> x.classList.toggle("active", x === b));
+    document.getElementById("sb-tab-options").hidden = tab !== 1;
+    document.getElementById("sb-tab-style").hidden = tab !== 2;
+  }));
+  document.getElementById("sb-presets").innerHTML =
+    [0,25,50,75,100].map(v=>`<div class="chip" data-v="${v}">${v}</div>`).join("");
+  document.getElementById("sb-presets").addEventListener("click", e=>{
+    const c = e.target.closest("[data-v]");
+    if (c) setFrameOpacity("fill", Number(c.dataset.v));
+  });
+  document.getElementById("cb-months").addEventListener("click", e=>{
+    const c = e.target.closest("[data-m]");
+    if (c) setBlackoutMonth(Number(c.dataset.m));
+  });
+  document.getElementById("cb-reset").addEventListener("click", ()=>{
+    const field = document.getElementById("color-by").value;
+    delete numStyle[field];
+    delete baseColorMapsCache[COLOR_BY_FIELDS[field].key];
+    applyColorBy();
+  });
+  document.getElementById("cb-overlay-off").addEventListener("click", ()=> setOverlay("snow", 0));
+  function showCbTab(tab){
+    cbTab = tab;
+    document.getElementById("cb-options").hidden = tab !== 1;
+    document.getElementById("cb-style").hidden = tab !== 2;
+    document.getElementById("cb-legend").hidden = tab !== 1;   // the style tab draws its own bar
+    document.querySelectorAll("#colorby-panel [data-tab]").forEach(b=> b.classList.toggle("active", Number(b.dataset.tab) === tab));
+    layoutPanels();
+  }
+  document.querySelectorAll("#colorby-panel [data-tab]").forEach(b=>
+    b.addEventListener("click", ()=> showCbTab(Number(b.dataset.tab))));
+
+  function renderMapLegend(){
+    const field = document.getElementById("color-by").value;
+    const el = document.getElementById("map-legend");
+    const wasHidden = el.hidden;
+    el.hidden = overlayState.colorby !== 2;
+    if (el.hidden) return;
+    if (wasHidden) requestAnimationFrame(restoreLegendPosition);
+    const opt = document.querySelector(`#color-by option[value="${field}"]`);
+    document.getElementById("ml-title").textContent = opt ? opt.textContent.replace(" (default)","") : field;
+    document.getElementById("ml-body").innerHTML = legendHtml(field);
+  }
+  // The legend is dragged by its title bar and kept inside the map; where it
+  // was left is remembered for the next visit. A drag is not a click, so
+  // letting go does not reopen the panel.
+  const legendEl = document.getElementById("map-legend");
+  let legendDrag = null, legendMoved = false;
+  function placeLegend(left, top){
+    const mapBox = document.getElementById("map").getBoundingClientRect();
+    left = Math.max(0, Math.min(left, mapBox.width - legendEl.offsetWidth));
+    top = Math.max(0, Math.min(top, mapBox.height - legendEl.offsetHeight));
+    Object.assign(legendEl.style, {left:`${left}px`, top:`${top}px`, bottom:"auto"});
+    return {left, top};
+  }
+  legendEl.querySelector(".ml-head").addEventListener("pointerdown", e=>{
+    if (e.target.closest("#ml-close")) return;
+    const box = legendEl.getBoundingClientRect(), mapBox = document.getElementById("map").getBoundingClientRect();
+    legendDrag = {dx: e.clientX - box.left, dy: e.clientY - box.top, x0: e.clientX, y0: e.clientY, mapBox};
+    legendMoved = false;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  });
+  legendEl.querySelector(".ml-head").addEventListener("pointermove", e=>{
+    if (!legendDrag) return;
+    if (Math.abs(e.clientX - legendDrag.x0) + Math.abs(e.clientY - legendDrag.y0) > 4) legendMoved = true;
+    if (legendMoved) placeLegend(e.clientX - legendDrag.mapBox.left - legendDrag.dx, e.clientY - legendDrag.mapBox.top - legendDrag.dy);
+  });
+  legendEl.querySelector(".ml-head").addEventListener("pointerup", ()=>{
+    if (legendDrag && legendMoved) {
+      try { localStorage.setItem("nisar-viewer-legend", JSON.stringify({left: parseFloat(legendEl.style.left), top: parseFloat(legendEl.style.top)})); } catch (err) { /* storage off */ }
+    }
+    legendDrag = null;
+  });
+  legendEl.addEventListener("click", e=>{
+    if (legendMoved) { legendMoved = false; return; }
+    setOverlay("colorby", e.target.closest("#ml-close") ? 0 : 1);
+  });
+  function restoreLegendPosition(){
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem("nisar-viewer-legend") || "null"); } catch (err) { saved = null; }
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) placeLegend(saved.left, saved.top);
+  }
+
+  // Bottom panels stack upwards in this order; on a phone only one is open.
+  const PANEL_ORDER = ["colorby","snow","rollout"];
+  const PHONE = window.matchMedia("(max-width: 768px)");
+  function layoutPanels(){
+    let bottom = 30;
+    PANEL_ORDER.forEach(k=>{
+      const el = document.getElementById(`${k}-panel`);
+      if (el.hidden) return;
+      el.style.bottom = PHONE.matches ? "" : `${bottom}px`;
+      bottom += el.offsetHeight + 8;
+    });
+  }
+
+  map.addControl(overlayControl("colorby", "Color frames by",
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" `+
+    `d="M12 3a9 9 0 0 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.7 17 3 12 3z"/>`+
+    `<circle cx="7.5" cy="11.5" r="1.4" fill="currentColor"/><circle cx="10" cy="7.4" r="1.4" fill="currentColor"/>`+
+    `<circle cx="14.6" cy="7.4" r="1.4" fill="currentColor"/><circle cx="17.2" cy="11" r="1.4" fill="currentColor"/></svg>`), "bottom-right");
+
+  function setOverlay(key, level){
+    if (key === "colorby") {
+      overlayState.colorby = level;
+      const btn = overlayButtons.colorby;
+      if (btn) {
+        btn.classList.toggle("active", level > 0);
+        btn.title = `${btn.getAttribute("aria-label")} - ${["off","panel open","legend shown"][level]}; click for ${["panel","legend","off"][level]}`;
+      }
+      if (level === 1 && PHONE.matches) ["snow","rollout"].forEach(k=>{ if (overlayState[k] === 2) setOverlay(k, 1); });
+      document.getElementById("colorby-panel").hidden = level !== 1;
+      renderColorbyPanel();
+      renderMapLegend();
+      showCbTab(cbTab);
+      return;
+    }
+    if (level === 2 && PHONE.matches) {
+      if (overlayState.colorby === 1) setOverlay("colorby", 2);
+      const other = key === "snow" ? "rollout" : "snow";
+      if (overlayState[other] === 2) setOverlay(other, 1);
+    }
+    overlayState[key] = level;
+    const on = level > 0;
+    const btn = overlayButtons[key];
+    if (btn) {
+      btn.classList.toggle("active", on);
+      btn.title = `${btn.getAttribute("aria-label")} - ${["off","layer shown","layer and panel shown"][level]}; click for ${["layer","panel","off"][level]}`;
+    }
+    document.getElementById(`${key}-panel`).hidden = level < 2;
+    const layers = key === "snow" ? ["snow-fill","snow-line"] : ["rollout-fill","rollout-line"];
+    layers.forEach(id=>{ if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); });
+    if (level === 2 && key === "snow") refreshSnowPanel();
+    if (key === "snow") applyColorBy();   // hides or restores the frame colours under the overlay
+    layoutPanels();
+  }
+  // A panel's x closes just the panel: the overlay stays on, and the colour
+  // panel leaves its legend on the map.
+  document.querySelectorAll(".overlay-panel [data-close]").forEach(b=>
+    b.addEventListener("click", ()=> setOverlay(b.dataset.close, b.dataset.close === "colorby" ? 2 : 1)));
+
+  function refreshSnowPanel(){
+    if (!META.has_blackout) return;
+    const yr = ovMonth === "yr";
+    document.querySelectorAll("#snow-months .chip").forEach(c=> c.classList.toggle("active", c.dataset.m === String(ovMonth)));
+    document.getElementById("snow-unit").textContent = yr ? "share of the year blacked out" : `share of ${MONTHS[ovMonth]} blacked out`;
+    document.getElementById("snow-lo").textContent = "0%";
+    document.getElementById("snow-hi").textContent = yr ? "100% (365 d)" : "100%";
+    const shown = shownFeatures.filter(f=>f.properties.has_blackout);
+    const half = shown.filter(f=>(f.properties._bo_ov||0) >= 50).length;
+    if (yr) {
+      const days = shown.map(f=>f.properties._boDays).sort((a,b)=>a-b);
+      const med = days.length ? days[Math.floor(days.length / 2)] : 0;
+      document.getElementById("snow-stat").textContent =
+        `${shown.length} of ${shownFeatures.length} frames shown have a blackout; median ${med} days a year `+
+        `(${days.length ? days[0] : 0}-${days.length ? days[days.length-1] : 0}), ${half} lose at least half the year`;
+    } else {
+      document.getElementById("snow-stat").textContent =
+        `${MONTHS[ovMonth]}: ${half} of ${shownFeatures.length} frames shown at least half blacked out`;
+    }
+  }
+  if (META.has_blackout) {
+    const el = document.getElementById("snow-months");
+    el.innerHTML = `<div class="chip" data-m="yr" title="Whole year">YR</div>`+
+      MONTHS.map((m,i)=>`<div class="chip" data-m="${i}">${m}</div>`).join("");
+    el.addEventListener("click", e=>{
+      const c = e.target.closest("[data-m]");
+      if (c) setOverlayMonth(c.dataset.m === "yr" ? "yr" : Number(c.dataset.m));
+    });
+  }
+
+  function renderRolloutPanel(){
+    if (!HAS_ROLLOUT_DATA) return;
+    const cmap = baseColorMap("_rollout");
+    const src = META.rollout_source || "";
+    document.getElementById("rollout-panel-note").textContent = src.endsWith(".geojson")
+      ? "DISP-S1 North America rollout, drawn from its Sentinel-1 frames. Click an option to zoom to it."
+      : `Rollout from ${src}, drawn as the union of its frames. Click an option to zoom to it.`;
+    document.getElementById("rollout-panel-list").innerHTML = ROLLOUT_DATA.features.map(f=>{
+      const p = f.properties, regions = asArray(p.regions);
+      const s1 = p.n_source ? ` &middot; ${p.n_source} S1 frames` : "";
+      return `<div class="ov-row" data-opt="${p.rollout}"><span class="ov-sw" style="background:${cmap.get(p.rollout)}"></span>`+
+        `<div><div class="ov-name">${p.rollout} <span class="ov-sub">${p.n_frames} NISAR frames${s1}</span></div>`+
+        `<div class="ov-sub">${regions.join(", ")}</div></div></div>`;
+    }).join("");
+  }
+  document.getElementById("rollout-panel-list").addEventListener("click", e=>{
+    const row = e.target.closest("[data-opt]");
+    if (!row) return;
+    const f = ROLLOUT_DATA.features.find(x=>x.properties.rollout === row.dataset.opt);
+    let w = 180, so = 90, ea = -180, no = -90;
+    const walk = c => { if (typeof c[0] === "number") { w = Math.min(w, c[0]); ea = Math.max(ea, c[0]); so = Math.min(so, c[1]); no = Math.max(no, c[1]); } else c.forEach(walk); };
+    walk(f.geometry.coordinates);
+    map.fitBounds([[w, so], [ea, no]], {padding: 60, duration: 1000});
+  });
+
   // Each basemap is one or more stacked layers (the Esri canvases keep labels separate).
   const BASEMAP_LAYERS = {light:["bm-light","bm-light-ref"], dark:["bm-dark","bm-dark-ref"], sat:["bm-sat"], sat2:["bm-sat2"]};
   document.querySelectorAll('input[name="basemap"]').forEach(r=>{
@@ -2009,6 +3237,21 @@ APP_JS = r"""
   // ---------- light / dark theme ----------
   document.getElementById("f-frame-popup").addEventListener("change", (e)=>{
     if (!e.target.checked) document.querySelectorAll(".maplibregl-popup").forEach(el=>el.remove());
+  });
+
+  // ---------- phone drawer ----------
+  const sidebarEl = document.getElementById("sidebar");
+  const setDrawer = open => sidebarEl.classList.toggle("open", open);
+  document.getElementById("menu-btn").addEventListener("click", ()=> setDrawer(true));
+  document.getElementById("sidebar-close").addEventListener("click", ()=> setDrawer(false));
+  document.getElementById("sidebar-backdrop").addEventListener("click", ()=> setDrawer(false));
+  // The drawer is narrower than the desktop sidebar, so its charts are redrawn
+  // at the width they have once it has slid in.
+  sidebarEl.addEventListener("transitionend", ()=>{ if (sidebarEl.classList.contains("open")) applyFilters(); });
+  window.matchMedia("(max-width: 768px)").addEventListener("change", e=>{
+    if (!e.matches) setDrawer(false);
+    map.resize();
+    applyFilters();
   });
 
   const themeBtn = document.getElementById("theme-toggle");
@@ -2083,6 +3326,8 @@ APP_JS = r"""
       <div class="pop-row">Pass: ${p.passDirection} &middot; consistent: ${p.cons_mode}${p.cons_cov!=="none"?"_"+p.cons_cov:""}</div>
       <div class="pop-row">GSLC granules in CMR: ${p.gslc_count} &middot; ${p.n_modes} mode(s) &middot; ${p.n_full}F / ${p.n_partial}P</div>
       ${duplicateRow(p)}
+      ${selectionRow(p)}
+      ${rolloutLine(p)}
       ${blackoutDetailBlock(p)}
       <div class="pop-actions">
         <button class="btn small primary" id="pop-select">${isSel ? "Remove from selection" : "Add to selection"}</button>
@@ -2098,7 +3343,7 @@ APP_JS = r"""
   function granuleRowsHtml(granules){
     return granules.map(g=>
       `<div class="granule-row"><span class="gdate">${g.date}</span> `+
-      `<span class="gmode">${g.mode}_${g.cov}</span> ${g.pol} ${g.dir} c${g.cycle}<br>${g.gid}</div>`
+      `<span class="gmode">${g.mode}_${g.cov}</span> ${g.pol} ${g.dir} c${g.cycle}${g.crid ? ` ${g.crid}` : ""}<br>${g.gid}</div>`
     ).join("");
   }
 
@@ -2156,6 +3401,7 @@ APP_JS = r"""
       <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
       <div class="pop-row">Pass: ${p.passDirection}</div>
       ${gunwSummaryRows(p)}
+      ${rolloutLine(p)}
       ${blackoutHoverLine(p)}
       <div class="pop-row" style="color:var(--accent)">click to list interferograms &amp; select</div>`;
   }
@@ -2174,6 +3420,7 @@ APP_JS = r"""
       <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
       <div class="pop-row">Pass: ${p.passDirection}</div>
       ${gunwSummaryRows(p)}
+      ${rolloutLine(p)}
       ${blackoutDetailBlock(p)}
       <div class="pop-actions">
         <button class="btn small primary" id="pop-select">${selected.has(p.id) ? "Remove from selection" : "Add to selection"}</button>
@@ -2249,9 +3496,14 @@ APP_JS = r"""
       .sort((a,b)=>a.ta - b.ta || a.tb - b.tb);
     if (!chartPoints.length) return `<div class="stat-line">No interferograms to plot.</div>`;
 
-    const padL = 52, padR = 24, padT = 12, padB = 30, H = 280;
     const withFlags = showFlags && META.has_flags;
-    const W = Math.min(720, Math.max(420, window.innerWidth - 140));
+    // The flag lanes are labelled in the left margin, like the GSLC plot's, so
+    // it widens to fit "RFI mitig." when they are shown; a label inside the
+    // plot area would sit under the earliest interferograms.
+    const padL = withFlags ? 96 : 52, padR = 24, padT = 12, padB = 30;
+    const W = chartWidth();
+    // A card the user has made taller gives the baseline axis the extra room.
+    const H = Math.max(280, chartRoom() - (withFlags ? FLAG_FIELDS.length * 20 + 12 : 0));
     let [t0, t1] = spanWithBlackouts(p, Math.min(...chartPoints.map(pt=>pt.ta)), Math.max(...chartPoints.map(pt=>pt.tb)));
     if (t1 === t0) { t0 -= 15 * DAY_MS; t1 += 15 * DAY_MS; }
     const pad = (t1 - t0) * 0.03;
@@ -2299,11 +3551,10 @@ APP_JS = r"""
       .concat(net.components > 1 ? [`<span style="color:#e5484d">&#9644;</span> cut off from the main network`] : [])
       .join(" &middot; ");
 
-    // Flag lanes sit under the axis labels, so the baseline scale is untouched;
-    // the wider left margin of their labels comes from the lanes' own offset.
+    // Flag lanes sit under the date axis and share its x scale.
     const flags = withFlags
       ? flagLanesSvg(chartPoints.map((pt,i)=>({i, ta: pt.ta, tb: pt.tb, g: pt.group.find(g=>g.fl) || pt.ifg})),
-                     xOf, padL + 40, W - padR, H + 4)
+                     xOf, padL, W - padR, H + 4)
       : null;
     const HH = flags ? H + 8 + flags.height : H;
     return `<svg id="chart-svg" width="${W}" height="${HH}" viewBox="0 0 ${W} ${HH}" role="img"
@@ -2335,8 +3586,6 @@ APP_JS = r"""
   // colour-vision-deficiency separation floor. Every row is also directly
   // labelled, so identity never rests on colour alone.
   const CHART_PALETTE = ["#3987e5","#d95926","#199e70","#c98500","#d55181","#008300","#9085e9","#e66767"];
-  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const DAY_MS = 86400000;
   let modeKeyOrder = null;
   let chartPoints = [];
 
@@ -2446,7 +3695,7 @@ APP_JS = r"""
     if (dupPoints.length) rows.push(DUP_ROW);
     chartPoints = chartPoints.concat(dupPoints);
     const padL = 96, padR = 24, padT = 10, padB = 30, rowH = 34;
-    const W = Math.min(720, Math.max(420, window.innerWidth - 140));
+    const W = chartWidth();
     const withFlags = showFlags && META.has_flags;
     const flagTop = padT + rows.length * rowH + 6;
     const flagH = withFlags ? FLAG_FIELDS.length * 20 + 6 : 0;
@@ -2514,12 +3763,36 @@ APP_JS = r"""
   }
 
   document.getElementById("chart-close").addEventListener("click", hideModeTimeline);
+  document.getElementById("chart-expand").addEventListener("click", ()=>{
+    const card = document.querySelector(".chart-card");
+    const big = card.classList.toggle("big");
+    if (big) { card.style.width = ""; card.style.height = ""; }
+    document.getElementById("chart-expand").title = big ? "Restore" : "Expand";
+  });
+  {
+    let drawn = "";
+    new ResizeObserver(()=>{
+      if (document.getElementById("chart-modal").hidden || !redrawChart) return;
+      const card = document.querySelector(".chart-card");
+      const size = `${document.getElementById("chart-body").clientWidth}x${card.style.height || card.classList.contains("big") ? card.clientHeight : 0}`;
+      if (size === drawn) return;   // redrawing changes the content height; only a new card size counts
+      drawn = size;
+      requestAnimationFrame(()=> redrawChart());
+    }).observe(document.querySelector(".chart-card"));
+  }
   document.getElementById("chart-flags").addEventListener("change", (e)=>{
     showFlags = e.target.checked;
     if (redrawChart) redrawChart();
   });
+  // Only a click that starts and ends on the backdrop closes the plot: dragging
+  // the card's resize corner past its edge ends on the backdrop too.
+  let modalDownOnBackdrop = false;
+  document.getElementById("chart-modal").addEventListener("pointerdown", (e)=>{
+    modalDownOnBackdrop = e.target.id === "chart-modal";
+  });
   document.getElementById("chart-modal").addEventListener("click", (e)=>{
-    if (e.target.id === "chart-modal") hideModeTimeline();
+    if (e.target.id === "chart-modal" && modalDownOnBackdrop) hideModeTimeline();
+    modalDownOnBackdrop = false;
   });
   document.addEventListener("keydown", (e)=>{ if (e.key === "Escape") hideModeTimeline(); });
 
@@ -2573,28 +3846,71 @@ APP_JS = r"""
       paint:{ "line-color": ["get","__color"], "line-width": 3 }
     });
 
+    // Seasonal blackout overlay: every frame with a blackout window is filled
+    // on one light-to-dark ramp by the share of the year (or month) it loses,
+    // at a fixed opacity, and the frame colouring underneath is hidden while it
+    // is on, so 0% and 100% read as different colours rather than as a wash of
+    // varying strength over other colours. Most windows are snow; Central
+    // America's Aug-Nov window is its rainy season, carried over from DISP-S1.
+    const BO_RAMP = ["#f2f7fc","#c6dbef","#9ecae1","#6baed6","#3182bd","#08519c","#08306b"];
+    const boColor = ["interpolate", ["linear"], ["to-number", ["get","_bo_ov"], 0]];
+    BO_RAMP.forEach((c,i)=> boColor.push(100 * i / (BO_RAMP.length - 1), c));
+    map.addLayer({
+      id:"snow-fill", type:"fill", source:"frames", layout:{visibility:"none"},
+      filter:["==", ["get","has_blackout"], true],
+      paint:{ "fill-color": boColor, "fill-opacity": 0.8 }
+    });
+    map.addLayer({
+      id:"snow-line", type:"line", source:"frames", layout:{visibility:"none"},
+      filter:["==", ["get","has_blackout"], true],
+      paint:{ "line-color":"#08306b", "line-width":0.6, "line-opacity":0.55 }
+    });
+    if (HAS_ROLLOUT_DATA) {
+      const rcolor = ["match", ["get","rollout"]];
+      baseColorMap("_rollout").forEach((c, v)=>{ if (v !== "none") rcolor.push(v, c); });
+      rcolor.push("#9a9a9a");
+      map.addSource("rollout-regions", { type:"geojson", data: ROLLOUT_DATA });
+      map.addLayer({ id:"rollout-fill", type:"fill", source:"rollout-regions", layout:{visibility:"none"},
+                     paint:{ "fill-color": rcolor, "fill-opacity": 0.35 } });
+      map.addLayer({ id:"rollout-line", type:"line", source:"rollout-regions", layout:{visibility:"none"},
+                     paint:{ "line-color": rcolor, "line-width": 2 } });
+      renderRolloutPanel();
+    }
+
     // ---------- color-by / opacity ----------
-    applyColorBy = function(){
+    // The sidebar and the map's colour panel edit the same state: the
+    // colour-by select, the two opacities, and the per-field colour styles.
+    paintFrames = function(){
       const field = document.getElementById("color-by").value;
       const colorExpr = colorExpression(field);
       map.setPaintProperty("frames-fill", "fill-color", colorExpr);
       map.setPaintProperty("frames-outline", "line-color", colorExpr);
-      const globalOpacity = Number(document.getElementById("fill-opacity").value) / 100;
-      map.setPaintProperty("frames-fill", "fill-opacity", globalOpacity);
-      renderColorByLegend(field);
+      map.setPaintProperty("frames-fill", "fill-opacity", overlayState.snow ? 0 : frameStyle.fill / 100);
+      map.setPaintProperty("frames-outline", "line-opacity",
+        overlayState.snow ? Math.min(0.2, frameStyle.outline / 100) : frameStyle.outline / 100);
+    };
+    applyColorBy = function(){
+      const field = document.getElementById("color-by").value;
+      document.getElementById("bo-month-row").hidden = field !== "blackout_month";
+      document.getElementById("colorby-scope").hidden = !SELECTION_FIELDS.has(field);
+      paintFrames();
+      syncOpacityInputs();
+      renderStyleControls(document.getElementById("colorby-legend"), field, false);
+      renderColorbyPanel();
+      renderMapLegend();
     };
     document.getElementById("color-by").addEventListener("change", applyColorBy);
-    document.getElementById("fill-opacity").addEventListener("input", (e)=>{
-      document.getElementById("opacity-val").textContent = e.target.value;
-      applyColorBy();
-    });
+    document.getElementById("fill-opacity").addEventListener("input", e=> setFrameOpacity("fill", Number(e.target.value)));
+    document.getElementById("outline-opacity").addEventListener("input", e=> setFrameOpacity("outline", Number(e.target.value)));
     document.getElementById("btn-reset-style").addEventListener("click", ()=>{
       Object.keys(baseColorMapsCache).forEach(k=>delete baseColorMapsCache[k]);
+      Object.keys(numStyle).forEach(k=>delete numStyle[k]);
+      cmapPopOpen = false;
       document.getElementById("color-by").value = "gslc_count";
-      document.getElementById("fill-opacity").value = 32;
-      document.getElementById("opacity-val").textContent = 32;
+      frameStyle.fill = 32; frameStyle.outline = 70;
       applyColorBy();
     });
+    syncColorByOptions();
     applyColorBy();
     applyFilters();
 
@@ -2616,6 +3932,8 @@ APP_JS = r"""
         <div class="pop-row">Pass: ${p.passDirection} &middot; ${p.cons_mode}${p.cons_cov!=="none"?"_"+p.cons_cov:""}</div>
         <div class="pop-row">GSLC granules in CMR: ${p.gslc_count} &middot; ${p.n_modes} mode(s)</div>
         ${duplicateRow(p)}
+        ${selectionRow(p)}
+        ${rolloutLine(p)}
         ${blackoutHoverLine(p)}
         ${referenceHoverLine(p)}
         <div class="pop-row" style="color:var(--accent)">click to list granules &amp; select</div>
@@ -2678,7 +3996,44 @@ APP_JS = r"""
     }
 
     // click -> granule list popup with a select toggle
-    const clickPopup = new maplibregl.Popup({ closeButton:true, closeOnClick:false, maxWidth:"340px" });
+    const clickPopup = new maplibregl.Popup({ closeButton:true, closeOnClick:false, maxWidth:"none", className:"frame-pop" });
+    // Expanded or not, the next frame's popup opens the way the last one was left.
+    let popBig = false;
+    function addPopupExpand(){
+      const el = clickPopup.getElement();
+      if (!el) return;
+      el.classList.toggle("pop-big", popBig);
+      const content = el.querySelector(".maplibregl-popup-content");
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "pop-expand";
+      btn.title = popBig ? "Restore" : "Expand"; btn.innerHTML = "&#10530;";
+      btn.addEventListener("click", ()=>{
+        popBig = !popBig;
+        content.style.width = ""; content.style.height = "";
+        el.classList.remove("pop-resized");
+        el.classList.toggle("pop-big", popBig);
+        btn.title = popBig ? "Restore" : "Expand";
+      });
+      content.appendChild(btn);
+      // A corner drag sets an inline size; the lists then grow with it. Any new
+      // size re-places the popup, so MapLibre picks the side of the click point
+      // it fits on rather than letting it run off the top of the screen.
+      new ResizeObserver(()=>{
+        if (content.style.width || content.style.height) el.classList.add("pop-resized");
+        if (!clickPopup.isOpen()) return;
+        clickPopup.setLngLat(clickPopup.getLngLat());
+        // Too tall for either side of the click point: pan the map just enough
+        // to bring the whole popup into view.
+        requestAnimationFrame(()=>{
+          const r = el.getBoundingClientRect(), m = document.getElementById("map").getBoundingClientRect();
+          const pad = 8;
+          let dy = 0;
+          if (r.bottom > m.bottom - pad) dy = r.bottom - (m.bottom - pad);
+          if (r.top - dy < m.top + pad) dy = r.top - (m.top + pad);
+          if (Math.abs(dy) > 2) map.panBy([0, dy], {duration: 250});
+        });
+      }).observe(content);
+    }
     map.on("click", "frames-fill", (e)=>{
       if (!document.getElementById("f-frame-popup").checked) return;
       // A GPS marker always sits inside some frame; a click on one belongs to it.
@@ -2694,10 +4049,12 @@ APP_JS = r"""
       if (product === "gunw") {
         clickPopup.setLngLat(lngLat).setHTML(gunwPopupHtml(feature.properties)).addTo(map);
         wireGunwPopup(feature);
+        addPopupExpand();
         return;
       }
       clickPopup.setLngLat(lngLat).setHTML(granulePopupHtml(feature.properties)).addTo(map);
       wireGranulePopup(feature);
+      addPopupExpand();
     };
   });
 
@@ -2707,14 +4064,31 @@ APP_JS = r"""
   // popup, CSV and plot to the frame's interferograms. The GSLC colour-by is
   // restored on return.
   let gslcColorBy = "gslc_count";
+
+  // The colour-by list offers only what fits the product shown: GSLC counts and
+  // consistent-mode views under GSLC, interferogram views under GUNW; pass
+  // direction, rollout, blackout and flags apply to both. Options the page has
+  // no data for stay hidden either way, so availability is read once, after
+  // every META check has unhidden what it supports.
+  let colorByAvailable = null;
+  function syncColorByOptions(){
+    const opts = Array.from(document.querySelectorAll("#color-by option"));
+    if (!colorByAvailable) colorByAvailable = new Set(opts.filter(o=>!o.hidden).map(o=>o.value));
+    opts.forEach(o=>{
+      o.hidden = !colorByAvailable.has(o.value) || (o.dataset.product && o.dataset.product !== product);
+    });
+  }
   document.getElementById("product-ctrl").addEventListener("click", (e)=>{
     const btn = e.target.closest("[data-product]");
     if (!btn || btn.dataset.product === product) return;
     product = btn.dataset.product;
     document.querySelectorAll("#product-ctrl [data-product]").forEach(b=>b.classList.toggle("active", b === btn));
     const sel = document.getElementById("color-by");
-    if (product === "gunw") { gslcColorBy = sel.value; sel.value = "gunw_count"; }
-    else if (sel.value.startsWith("gunw_")) sel.value = gslcColorBy;
+    if (product === "gunw") {
+      gslcColorBy = sel.value;
+      if (sel.selectedOptions[0].dataset.product === "gslc") sel.value = "gunw_count";
+    } else if (sel.value.startsWith("gunw_")) sel.value = gslcColorBy;
+    syncColorByOptions();
     renderChips();
     applyFilters();          // re-filters on this product's chips and recolours
     document.querySelectorAll(".maplibregl-popup").forEach(el=>el.remove());
@@ -2932,6 +4306,13 @@ def main(argv: list[str] | None = None) -> None:
         "frames covering them are the viewer's CalVal frames.",
     )
     parser.add_argument(
+        "--rollout",
+        type=Path,
+        default=ROLLOUT_REGIONS,
+        help="Rollout regions: a GeoJSON of polygons carrying 'rollout' (matched "
+        "by overlap), or a JSON {option: [frame_idx, ...]} frame list.",
+    )
+    parser.add_argument(
         "--gps-source",
         default=NGL_STATION_MAP,
         help="UNR/NGL station map URL, a local copy of that page, or a GeoJSON "
@@ -2960,6 +4341,14 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  {len(gdf)} frames")
     gdf["isCalVal"] = flag_calval_frames(gdf, gpd.read_file(args.calval_sites))
     print(f"  {int(gdf['isCalVal'].sum())} CalVal frames from {args.calval_sites}")
+    rollout_options, gdf["rollout"], gdf["rollout_regions"] = rollout_by_frame(
+        gdf, args.rollout
+    )
+    rollout_regions = rollout_overview(
+        gdf, args.rollout, rollout_options, list(gdf["rollout"])
+    )
+    n_rollout = sum(1 for r in gdf["rollout"] if r)
+    print(f"  {n_rollout} frames in a rollout option from {args.rollout}")
 
     if args.gslc_catalog is not None:
         print(f"Loading GSLC catalog from {args.gslc_catalog}")
@@ -3032,6 +4421,8 @@ def main(argv: list[str] | None = None) -> None:
         "has_reference": reference is not None,
         "has_gunw": gunw is not None,
         "has_flags": n_flagged > 0,
+        "rollout_options": rollout_options,
+        "rollout_source": args.rollout.name,
         "n_gunw": sum(
             f["properties"].get("gunw_count", 0) for f in frame_data["features"]
         ),
@@ -3041,7 +4432,7 @@ def main(argv: list[str] | None = None) -> None:
     if gps_sites["features"]:
         print(f"  {len(gps_sites['features'])} UNR GPS sites")
 
-    html = render_html(frame_data, meta, gps_sites)
+    html = render_html(frame_data, meta, gps_sites, rollout_regions)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(html)
     size_mb = args.output.stat().st_size / 1e6
