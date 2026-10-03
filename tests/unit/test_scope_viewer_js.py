@@ -33,6 +33,10 @@ let modeKeyOrder = null;
 let archiveSpan = null;
 let showFlags = false;
 const META = {};
+// The plots size themselves to the chart card on the page; with no page here
+// they get the card's default size.
+function chartWidth(){ return Math.min(720, Math.max(420, window.innerWidth - 140)); }
+function chartRoom(){ return 0; }
 """
 
 GRANULES = [
@@ -259,16 +263,12 @@ def test_gunw_csv_has_one_row_per_granule() -> None:
 
 
 def test_gunw_count_follows_the_gunw_chips() -> None:
-    frames = [{"properties": {"gunw_ifgs": IFGS}}]
     counts = run_js(
-        ["asArray", "updateSelectedGunwCounts"],
-        "globalThis.activeChips = {gunwMode: new Set(), gunwPol: new Set()};"
-        " const n = () => (updateSelectedGunwCounts(),"
-        " FRAME_DATA.features[0].properties.gunw_count_sel);"
-        " const all = n(); activeChips.gunwPol.add('HV'); const hv = n();"
-        " activeChips.gunwPol.clear(); activeChips.gunwMode.add('4000');"
-        " return [all, hv, n()];",
-        frames,
+        ["selectedGunwCount"],
+        f"const ifgs = {json.dumps(IFGS)}; const none = new Set();"
+        " return [selectedGunwCount(ifgs, none, none, '', ''),"
+        " selectedGunwCount(ifgs, none, new Set(['HV']), '', ''),"
+        " selectedGunwCount(ifgs, new Set(['4000']), none, '', '')];",
     )
     assert counts == [3, 1, 0]
 
@@ -386,15 +386,17 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
         return {"properties": props}
 
     shown = run_js(
-        ["parseIntSet", "matchesArrayFilter", "currentFiltered"],
+        ["asArray", "parseIntSet", "matchesArrayFilter", "currentFiltered"],
         "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
         " 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
         " querySelector: () => ({value: 'all'})};"
         " globalThis.product = 'gslc';"
-        " globalThis.activeChips = {gslcMode: new Set(), gslcPol: new Set()};"
+        " globalThis.activeChips = {gslcMode: new Set(), gslcPol: new Set(),"
+        " gslcCrid: new Set()};"
         " globalThis.selected = new Map([['47_15', {}], ['47_16', {}]]);"
+        " globalThis.activeRollout = new Set();"
         " const ids = () => currentFiltered().map(f => f.properties.id);"
         " const all = ids(); state['f-selected-only'].checked = true;"
         " const only = ids(); selected.clear(); return [all, only, ids()];",
@@ -402,6 +404,41 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
     )
     # the flag narrows the other filters rather than replacing them
     assert shown == [["47_14", "47_15"], ["47_15"], []]
+
+
+def test_rollout_filter_matches_any_option_and_none() -> None:
+    def frame(idx: int, rollout: list[str]) -> dict:
+        props = {
+            "id": f"47_{idx}",
+            "frame_idx": idx,
+            "track": 47,
+            "frame": idx,
+            "passDirection": "Ascending",
+            "isCalVal": False,
+            "gslc_modes": ["2005"],
+            "gslc_pols": ["DHDH"],
+            "rollout": rollout,
+        }
+        return {"properties": props}
+
+    shown = run_js(
+        ["asArray", "parseIntSet", "matchesArrayFilter", "currentFiltered"],
+        "const state = {'f-track': {value: ''}, 'f-frame': {value: ''},"
+        " 'f-id': {value: ''}, 'f-calval': {checked: false},"
+        " 'f-selected-only': {checked: false}};"
+        " globalThis.document = {getElementById: id => state[id],"
+        " querySelector: () => ({value: 'all'})};"
+        " globalThis.product = 'gslc';"
+        " globalThis.activeChips = {gslcMode: new Set(), gslcPol: new Set(),"
+        " gslcCrid: new Set()};"
+        " globalThis.selected = new Map();"
+        " globalThis.activeRollout = new Set(['P1']);"
+        " const ids = o => currentFiltered(o).map(f => f.properties.frame_idx);"
+        " const p1 = ids(); activeRollout.add('none'); const p1none = ids();"
+        " return [p1, p1none, ids({ignoreRollout: true})];",
+        [frame(1, ["P0", "P1"]), frame(2, ["P4"]), frame(3, [])],
+    )
+    assert shown == [[1], [1, 3], [1, 2, 3]]
 
 
 def test_gunw_network_status_names_connected_and_disconnected_frames() -> None:
@@ -432,3 +469,84 @@ def test_flag_status_reads_all_some_none_and_orbit() -> None:
         " flagStatus(items.slice(2), 'f')];",
     )
     assert result == ["all", "some", "none", "mixed", "MOE", "not collected"]
+
+
+def test_selection_counts_follow_chips_and_date_range() -> None:
+    rows = json.dumps(
+        [
+            [g["mode"], g["pol"], g["date"], f"{g['date']}|{g['mode']}|{g['cov']}"]
+            for g in GRANULES
+        ]
+    )
+    result = run_js(
+        ["selectedGslcStats"],
+        f"const rows = {rows}; const none = new Set();"
+        " return [selectedGslcStats(rows, none, none, '', ''),"
+        " selectedGslcStats(rows, new Set(['20']), none, '', ''),"
+        " selectedGslcStats(rows, none, none, '2026-01-01', ''),"
+        " selectedGslcStats(rows, none, none, '', '2025-12-31')];",
+    )
+    assert result == [
+        {"acq": 2, "dup": 1, "modes": 2},
+        {"acq": 1, "dup": 1, "modes": 1},
+        {"acq": 1, "dup": 0, "modes": 1},
+        {"acq": 1, "dup": 1, "modes": 1},
+    ]
+
+
+def test_gunw_count_filters_on_the_secondary_date() -> None:
+    ifgs = json.dumps(
+        [
+            {"mode": "20", "pol": "HH", "ref": "2025-10-01", "sec": "2025-11-01"},
+            {"mode": "20", "pol": "HH", "ref": "2025-11-01", "sec": "2026-02-01"},
+        ]
+    )
+    result = run_js(
+        ["selectedGunwCount"],
+        f"const ifgs = {ifgs}; const none = new Set();"
+        " return [selectedGunwCount(ifgs, none, none, '', ''),"
+        " selectedGunwCount(ifgs, none, none, '2025-11-15', ''),"
+        " selectedGunwCount(ifgs, new Set(['40']), none, '', '')];",
+    )
+    assert result == [2, 1, 0]
+
+
+def test_blackout_month_shares_walk_windows_across_the_new_year() -> None:
+    wrapping = ["2025-11-01 -> 2026-03-15", "2026-11-01 -> 2027-03-15"]
+    short = ["2025-01-12 -> 2025-02-21"]
+    result = run_js(
+        ["blackoutMonthShares"],
+        f"const r = s => s.map(x => Math.round(x * 100));"
+        f" return [r(blackoutMonthShares({json.dumps(wrapping)})),"
+        f" r(blackoutMonthShares({json.dumps(short)})), blackoutMonthShares([])];",
+    )
+    # Nov-Feb whole, half of March, nothing in between.
+    assert result[0] == [100, 100, 48, 0, 0, 0, 0, 0, 0, 0, 100, 100]
+    # 20 of January's 31 days, 21 of February's 28.
+    assert result[1] == [65, 75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert result[2] == [0] * 12
+
+
+def test_crid_is_read_from_the_granule_name_and_filters_counts() -> None:
+    gslc = (
+        "NISAR_L2_PR_GSLC_024_001_D_052_0505_SVSH_A_20260626T063101"
+        "_20260626T063139_P05023_N_F_J_001"
+    )
+    gunw = (
+        "NISAR_L2_PR_GUNW_024_001_D_061_025_2000_SH_20260626T063622_20260626T063654"
+        "_20260708T063621_20260708T063653_P05024_N_F_J_001"
+    )
+    rows = json.dumps(
+        [
+            ["20", "HH", "2025-11-01", "a", "P05023"],
+            ["20", "HH", "2025-11-13", "b", "P05024"],
+        ]
+    )
+    result = run_js(
+        ["cridOf", "selectedGslcStats"],
+        f"const rows = {rows}; const none = new Set();"
+        f" return [cridOf('{gslc}', 13), cridOf('{gunw}', 15), cridOf('short', 13),"
+        " selectedGslcStats(rows, none, none, '', '', new Set(['P05024'])).acq,"
+        " selectedGslcStats(rows, none, none, '', '', none).acq];",
+    )
+    assert result == ["P05023", "P05024", "", 1, 2]
