@@ -85,6 +85,7 @@ def _refresh_frame_data(
     rollout: Path,
     blackout: dict[str, list] | None,
     gunw: pd.DataFrame | None,
+    granule_qa: dict[str, dict] | None = None,
 ) -> str:
     opener = "const FRAME_DATA = "
     start = html.index(opener) + len(opener)
@@ -137,6 +138,10 @@ def _refresh_frame_data(
     if granule_flags is not None:
         n_flagged = gen.attach_granule_flags(frame_data, granule_flags)
         print(f"  flags for {n_flagged} granules / interferograms")
+    n_qa = None
+    if granule_qa is not None:
+        n_qa = gen.attach_granule_qa(frame_data, granule_qa)
+        print(f"  QA metrics for {n_qa} granules / interferograms")
     payload = json.dumps(frame_data, separators=(",", ":"))
     html = f"{html[:start]}{payload}{html[end:]}"
     overview = gen.rollout_overview(frames, rollout, options, frame_rollout)
@@ -158,6 +163,8 @@ def _refresh_frame_data(
         )
     if n_flagged is not None:
         meta["has_flags"] = n_flagged > 0
+    if n_qa is not None:
+        meta["has_qa"] = n_qa > 0
     return html.replace(
         match.group(0), f"const META = {json.dumps(meta, separators=(',', ':'))};", 1
     )
@@ -171,6 +178,7 @@ def sync(
     rollout: Path = gen.ROLLOUT_REGIONS,
     blackout: dict[str, list] | None = None,
     gunw: pd.DataFrame | None = None,
+    granule_qa: dict[str, dict] | None = None,
 ) -> None:
     """Rewrite ``path`` with the current generated blocks."""
     html = path.read_text()
@@ -179,7 +187,7 @@ def sync(
     html = _replace_app_js(html)
     html = _upsert_const(html, "UNR_GPS_DATA", gps_sites)
     html = _refresh_frame_data(
-        html, calval_sites, granule_flags, rollout, blackout, gunw
+        html, calval_sites, granule_flags, rollout, blackout, gunw, granule_qa
     )
     path.write_text(html)
     print(f"synced {path} ({path.stat().st_size / 1e6:.1f} MB)")
@@ -209,6 +217,12 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=None,
         help="Per-granule flag cache (from collect_granule_flags.py) to attach.",
+    )
+    parser.add_argument(
+        "--granule-qa",
+        type=Path,
+        default=None,
+        help="Per-granule QA cache (from collect_granule_qa.py) to attach.",
     )
     parser.add_argument(
         "--rollout",
@@ -243,6 +257,7 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
     gunw = gen.load_gunw_catalog(args.gunw_catalog) if args.gunw_catalog else None
+    granule_qa = gen.load_granule_flags(args.granule_qa) if args.granule_qa else None
     for path in args.html:
         sync(
             path,
@@ -252,6 +267,7 @@ def main(argv: list[str] | None = None) -> None:
             args.rollout,
             blackout,
             gunw,
+            granule_qa,
         )
 
 

@@ -826,17 +826,17 @@ def parse_gps_sites(
 
 
 def load_granule_flags(path: Path) -> dict[str, dict]:
-    """Read the per-granule flag cache written by ``collect_granule_flags.py``.
+    """Read a per-granule cache written by ``collect_granule_flags.py`` or ``_qa.py``.
 
     Parameters
     ----------
     path : Path
-        Gzipped JSON mapping granule id to its flags.
+        Gzipped JSON mapping granule id to its flags (or QA metrics).
 
     Returns
     -------
     dict
-        Granule id to flags (``j f o r m d``).
+        Granule id to flags (``j f o r m d``) or QA metrics.
 
     """
     with gzip.open(path, "rt") as fh:
@@ -855,6 +855,26 @@ def attach_granule_flags(frame_data: dict, flags: dict[str, dict]) -> int:
         Number of granules and interferograms that received flags.
 
     """
+    return _attach_per_granule(frame_data, flags, "fl")
+
+
+def attach_granule_qa(frame_data: dict, qa: dict[str, dict]) -> int:
+    """Attach cached QA metrics to every GSLC granule and GUNW interferogram.
+
+    Each entry with metrics in ``qa`` (from ``collect_granule_qa.py``) gains a
+    ``qa`` field. Entries not yet read, or withdrawn from the archive (cached
+    empty), are left without one.
+
+    Returns
+    -------
+    int
+        Number of granules and interferograms that received metrics.
+
+    """
+    return _attach_per_granule(frame_data, {k: v for k, v in qa.items() if v}, "qa")
+
+
+def _attach_per_granule(frame_data: dict, values: dict[str, dict], field: str) -> int:
     attached = 0
     for feature in frame_data["features"]:
         props = feature["properties"]
@@ -864,9 +884,9 @@ def attach_granule_flags(frame_data: dict, flags: dict[str, dict]) -> int:
             ifgs = json.loads(ifgs)
             props["gunw_ifgs"] = ifgs
         for entry in [*(props.get("granules") or []), *ifgs]:
-            fl = flags.get(entry.get("gid"))
-            if fl is not None:
-                entry["fl"] = fl
+            value = values.get(entry.get("gid"))
+            if value is not None:
+                entry[field] = value
                 attached += 1
     return attached
 
@@ -1203,7 +1223,12 @@ APP_CSS = r"""
   .chart-ifg-end{pointer-events:none;stroke:var(--panel);stroke-width:1;}
   .chart-gap{fill:#e5484d;fill-opacity:.16;stroke:#e5484d;stroke-width:1;stroke-dasharray:4 3;}
   .chart-warn{color:#e5484d;font-weight:600;}
-  .chart-flag-ctl{display:flex;align-items:center;gap:4px;margin:2px 8px 0 auto;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:pointer;}
+  .chart-ctls{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:2px 10px;margin:2px 8px 0 auto;}
+  .chart-flag-ctl{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:pointer;}
+  .chart-flag-ctl select{width:auto;margin:0;padding:1px 4px;font-size:11px;}
+  .qa-stat{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin:2px 0 8px;font-size:11px;color:var(--text-dim);}
+  .qa-stat .chip{padding:2px 8px;}
+  .qa-stat input{width:64px;margin:0;padding:2px 4px;}
   .chart-flag-ctl[hidden]{display:none;}
   .chart-flag-ctl input{width:auto;margin:0;}
   .chart-ifg-off{stroke:#e5484d;stroke-opacity:.45;stroke-width:10;stroke-linecap:round;pointer-events:none;}
@@ -1336,6 +1361,17 @@ BODY_HTML = r"""<body>
             <option value="flag_r" class="opt-flag" hidden>Flag: RFI mitigation applied</option>
             <option value="flag_m" class="opt-flag" hidden>Flag: mixed mode</option>
             <option value="flag_d" class="opt-flag" hidden>Flag: dithered</option>
+            <option data-product="gslc" value="gslc_qa_rl" class="opt-qa" hidden>QA: RFI likelihood</option>
+            <option data-product="gunw" value="gunw_qa_cm" class="opt-qa" hidden>QA: coherence median</option>
+            <option data-product="gunw" value="gunw_qa_ca" class="opt-qa" hidden>QA: coherence mean</option>
+            <option data-product="gunw" value="gunw_qa_v" class="opt-qa" hidden>QA: valid unwrapped (%)</option>
+            <option data-product="gunw" value="gunw_qa_l" class="opt-qa" hidden>QA: largest region (%)</option>
+            <option data-product="gunw" value="gunw_qa_n" class="opt-qa" hidden>QA: connected components</option>
+            <option data-product="gunw" value="gunw_qa_im" class="opt-qa" hidden>QA: ionosphere mean</option>
+            <option data-product="gunw" value="gunw_qa_imd" class="opt-qa" hidden>QA: ionosphere median</option>
+            <option data-product="gunw" value="gunw_qa_is" class="opt-qa" hidden>QA: ionosphere spread</option>
+            <option data-product="gunw" value="gunw_qa_iu" class="opt-qa" hidden>QA: ionosphere uncertainty</option>
+            <option data-product="gunw" value="gunw_qa_rl" class="opt-qa" hidden>QA: RFI likelihood (pair)</option>
           </select>
           <div id="sb-tab-options">
             <div id="sb-options"></div>
@@ -1343,7 +1379,7 @@ BODY_HTML = r"""<body>
               <label>Month</label>
               <select id="bo-month"></select>
             </div>
-            <div class="stat-line" id="colorby-scope">Counts follow the mode / polarization chips and the date range.</div>
+            <div class="stat-line" id="colorby-scope">Counts and QA follow the mode / polarization chips and the date range.</div>
             <div class="cb-legend" id="sb-legend"></div>
           </div>
           <div id="sb-tab-style" hidden>
@@ -1519,7 +1555,12 @@ BODY_HTML = r"""<body>
             <div class="pop-title" id="chart-title"></div>
             <div class="chart-sub" id="chart-sub"></div>
           </div>
-          <label class="chart-flag-ctl" id="chart-flags-ctl" hidden><input type="checkbox" id="chart-flags"> Show flags</label>
+          <div class="chart-ctls">
+            <label class="chart-flag-ctl" id="chart-flags-ctl" hidden><input type="checkbox" id="chart-flags"> Show flags</label>
+            <label class="chart-flag-ctl" id="chart-qa-ctl" hidden><input type="checkbox" id="chart-qa"> Show QA</label>
+            <label class="chart-flag-ctl" id="chart-qa-color-ctl" hidden>Colour pairs
+              <select id="chart-qa-color"><option value="">by mode</option></select></label>
+          </div>
           <button class="li-x" id="chart-expand" title="Expand">&#10530;</button>
           <button class="li-x" id="chart-close" title="Close">&times;</button>
         </div>
@@ -1582,6 +1623,20 @@ APP_JS = r"""
     if (typeof p.gunw_ifgs === "string") p.gunw_ifgs = ifgs;
     p.gunw_crids = uniqSorted(ifgs.map(g=>g.crid).filter(Boolean));
   });
+  // A pair's RFI likelihood is the larger of its two acquisitions', read from
+  // the frame's GSLCs; the GUNW's own QA has none.
+  function attachPairRfi(p){
+    const byDate = new Map();
+    (Array.isArray(p.granules) ? p.granules : []).forEach(g=>{
+      if (g.qa && Number.isFinite(g.qa.rl)) byDate.set(g.date, Math.max(byDate.get(g.date) ?? -Infinity, g.qa.rl));
+    });
+    if (!byDate.size) return;
+    asArray(p.gunw_ifgs).forEach(g=>{
+      const vals = [byDate.get(g.ref), byDate.get(g.sec)].filter(v=>v != null);
+      if (vals.length) g.rl = Math.max(...vals);
+    });
+  }
+  FRAME_DATA.features.forEach(f=> attachPairRfi(f.properties));
   const allCridsGslc = uniqSorted(FRAME_DATA.features.flatMap(f => f.properties.gslc_crids));
   const allCridsGunw = uniqSorted(FRAME_DATA.features.flatMap(f => f.properties.gunw_crids));
 
@@ -1665,9 +1720,37 @@ APP_JS = r"""
     flag_m:        { label:"Mixed mode",           key:"_flag_m",       kind:"cat" },
     flag_d:        { label:"Dithered",             key:"_flag_d",       kind:"cat" }
   };
+  // ---------- per-granule QA metrics ----------
+  // Read from each product's QA_STATS.h5 (collect_granule_qa.py); an entry
+  // without ``qa`` has not been read. ``dir`` is the bad direction: -1 low
+  // values are bad, 1 high ones, 0 a large magnitude (the ionosphere mean
+  // carries its own offset per pair, so only its size compares). ``thr`` is the
+  // default "bad" threshold and ``lo``/``hi`` a fixed scale for the plot lanes.
+  // The RFI likelihood is documented as 0-1 but runs from 0.01 to 1e31 in the
+  // archive, so it is coloured on a log scale and "bad" means past 1.
+  const QA_FIELDS = {
+    cm:  {label:"Coherence median",            lane:"coh. median", dir:-1, thr:0.3, digits:2, lo:0, hi:1},
+    ca:  {label:"Coherence mean",              lane:"coh. mean",   dir:-1, thr:0.3, digits:2, lo:0, hi:1},
+    v:   {label:"Valid unwrapped (%)",         lane:"valid %",     dir:-1, thr:50,  digits:0, lo:0, hi:100},
+    l:   {label:"Largest region (%)",          lane:"largest %",   dir:-1, thr:50,  digits:0, lo:0, hi:100},
+    n:   {label:"Connected components",        lane:"# regions",   dir:1,  thr:1,   digits:0},
+    im:  {label:"Ionosphere mean (rad)",       lane:"iono mean",   dir:0,  thr:20,  digits:1},
+    imd: {label:"Ionosphere median (rad)",     lane:"iono median", dir:0,  thr:20,  digits:1},
+    is:  {label:"Ionosphere spread (rad)",     lane:"iono spread", dir:1,  thr:10,  digits:1},
+    iu:  {label:"Ionosphere uncertainty (rad)",lane:"iono unc.",   dir:1,  thr:3,   digits:2},
+    rl:  {label:"RFI likelihood (log10)",      lane:"RFI likel.",  dir:1,  thr:1,   digits:2, log:true}
+  };
+  const QA_GUNW = ["cm","ca","v","l","n","im","imd","is","iu","rl"];
+  const QA_LANES = {gunw: ["cm","v","l","n","im","is","iu","rl"], gslc: ["rl"]};
+  const QA_MISSING = "#3a3f45";
+  QA_GUNW.forEach(k=>{
+    COLOR_BY_FIELDS[`gunw_qa_${k}`] = {label: QA_FIELDS[k].label, key: `_qa_gunw_${k}`, kind:"num", qa:k, product:"gunw"};
+  });
+  COLOR_BY_FIELDS.gslc_qa_rl = {label: QA_FIELDS.rl.label, key: "_qa_gslc_rl", kind:"num", qa:"rl", product:"gslc"};
   // These counts change with the chips and the date range; the scope note
   // under the colour-by select is shown only for them.
-  const SELECTION_FIELDS = new Set(["gslc_count","n_duplicate","n_modes","gunw_count"]);
+  const SELECTION_FIELDS = new Set(["gslc_count","n_duplicate","n_modes","gunw_count",
+    ...Object.keys(COLOR_BY_FIELDS).filter(k=>COLOR_BY_FIELDS[k].qa)]);
 
   // Rollout options keep a fixed colour each, earliest first, so the map reads
   // the same whatever subset is shown.
@@ -1739,10 +1822,14 @@ APP_JS = r"""
     if (info.kind === "num") {
       const {lo, hi} = fieldRange(fieldName);
       const stops = activeStops(fieldName);
-      if (!(hi > lo)) return stops[Math.floor(stops.length/2)];
-      const expr = ["interpolate", ["linear"], ["to-number", ["get", info.key]]];
-      stops.forEach((col,i)=> expr.push(lo + (hi - lo) * (i / (stops.length - 1)), col));
-      return expr;
+      let expr = stops[Math.floor(stops.length/2)];
+      if (hi > lo) {
+        expr = ["interpolate", ["linear"], ["to-number", ["get", info.key]]];
+        stops.forEach((col,i)=> expr.push(lo + (hi - lo) * (i / (stops.length - 1)), col));
+      }
+      // A frame none of whose granules has been read has no value, which
+      // to-number would paint as the bottom of the ramp.
+      return info.qa ? ["case", ["==", ["typeof", ["get", info.key]], "number"], expr, QA_MISSING] : expr;
     }
     const cmap = baseColorMap(info.key);
     const expr = ["match", ["to-string", ["get", info.key]]];
@@ -1784,7 +1871,7 @@ APP_JS = r"""
           `<span class="cmap-swatch" style="background:linear-gradient(90deg,${COLORMAPS[name].join(",")})"></span></button>`).join("")+
         `</div></details>`).join("");
       const open = !collapsible || cmapPopOpen;
-      el.innerHTML =
+      el.innerHTML = qaStatHtml(fieldName) +
         `<div class="${collapsible ? "cmap-bar-click" : ""}" data-role="bar"${collapsible ? ` title="Click to change the colormap and range"` : ""}>`+
         `<div class="cmap-ramp" style="background:linear-gradient(90deg,${grad});"></div>`+
         `<div class="cmap-labels"><span>${fmtNum(lo)}</span><span>${info.label}${fixed ? " (fixed)" : ""}</span><span>${fmtNum(hi)}</span></div></div>`+
@@ -1815,6 +1902,7 @@ APP_JS = r"""
         st.vmin = readBound("vmin"); st.vmax = readBound("vmax"); applyColorBy();
       }));
       q("auto").addEventListener("click", ()=>{ st.vmin = null; st.vmax = null; applyColorBy(); });
+      if (info.qa) wireQaStat(el, fieldName);
       return;
     }
     const colorMap = baseColorMap(info.key);
@@ -1845,7 +1933,8 @@ APP_JS = r"""
     if (info.kind === "num") {
       const {lo, hi} = fieldRange(fieldName);
       return `<div class="cmap-ramp" style="background:linear-gradient(90deg,${activeStops(fieldName).join(",")});"></div>`+
-             `<div class="cmap-labels"><span>${fmtNum(lo)}</span><span>${fmtNum(hi)}</span></div>`;
+             `<div class="cmap-labels"><span>${fmtNum(lo)}</span><span>${fmtNum(hi)}</span></div>`+
+             (info.qa ? `<div class="mini-cats"><span><i style="background:${QA_MISSING}"></i>QA not read</span></div>` : "");
     }
     return `<div class="mini-cats">`+Array.from(baseColorMap(info.key)).map(([v,c])=>
       `<span><i style="background:${c}"></i>${v}</span>`).join("")+`</div>`;
@@ -1923,6 +2012,11 @@ APP_JS = r"""
   if (META.has_flags) {
     document.querySelectorAll(".opt-flag").forEach(o=>{ o.hidden = false; });
     document.getElementById("chart-flags-ctl").hidden = false;
+  }
+  if (META.has_qa) {
+    // GUNW colourings need the GUNW catalog as well as the QA cache.
+    document.querySelectorAll(".opt-qa").forEach(o=>{ o.hidden = o.dataset.product === "gunw" && !META.has_gunw; });
+    document.getElementById("chart-qa-ctl").hidden = false;
   }
 
   if (META.has_blackout) document.getElementById("opt-blackout").hidden = false;
@@ -2244,6 +2338,7 @@ APP_JS = r"""
   function applyFilters(){
     updateSelectedCounts();
     updateFlagStatus();
+    updateQaStats();
     const filtered = currentFiltered();
     shownFeatures = filtered;
     if (map.getSource("frames")) {
@@ -2411,6 +2506,210 @@ APP_JS = r"""
       `<span style="color:#6b6b6b">&middot;</span> no &middot; orbit ${orbitKey}`;
     return {svg, height: FLAG_FIELDS.length * rowH, legend};
   }
+
+  // ---------- QA metrics per frame ----------
+  // Every QA colouring summarises the frame's granules (or pairs) left by the
+  // chips and the date range, like the counts: their median, their worst
+  // (10th / 90th percentile, by the metric's bad direction), or the share past
+  // a threshold.
+  function qaValue(g, k){
+    if (k === "rl" && g.rl != null) return g.rl;
+    return g.qa ? g.qa[k] : undefined;
+  }
+  const qaStats = {};
+  function qaStatOf(field){
+    if (!qaStats[field]) qaStats[field] = {stat:"median", thr: QA_FIELDS[COLOR_BY_FIELDS[field].qa].thr};
+    return qaStats[field];
+  }
+  function quantile(sorted, q){
+    const pos = (sorted.length - 1) * q, i = Math.floor(pos);
+    return i + 1 < sorted.length ? sorted[i] + (pos - i) * (sorted[i + 1] - sorted[i]) : sorted[i];
+  }
+  function qaIsBad(k, v, thr){
+    const dir = QA_FIELDS[k].dir;
+    return dir < 0 ? v < thr : dir > 0 ? v > thr : Math.abs(v) > thr;
+  }
+  function qaAggregate(k, values, stat, thr){
+    if (!values.length) return undefined;
+    if (stat === "bad") return 100 * values.filter(v=>qaIsBad(k, v, thr)).length / values.length;
+    const dir = QA_FIELDS[k].dir;
+    if (stat === "worst" && dir === 0) return quantile(values.map(Math.abs).sort((a,b)=>a-b), 0.9);
+    const sorted = [...values].sort((a,b)=>a-b);
+    if (stat === "worst") return quantile(sorted, dir < 0 ? 0.1 : 0.9);
+    return quantile(sorted, 0.5);
+  }
+  function qaEntries(p, gunw){
+    const {from, to} = dateRange();
+    const modes = gunw ? activeChips.gunwMode : activeChips.gslcMode;
+    const pols = gunw ? activeChips.gunwPol : activeChips.gslcPol;
+    const crids = gunw ? activeChips.gunwCrid : activeChips.gslcCrid;
+    return asArray(gunw ? p.gunw_ifgs : p.granules).filter(g=>{
+      const date = gunw ? g.sec : g.date;
+      return (!modes.size || modes.has(g.mode)) && (!pols.size || pols.has(g.pol)) &&
+             (!crids || !crids.size || crids.has(g.crid)) && (!from || date >= from) && (!to || date <= to);
+    });
+  }
+  function qaLabel(field){
+    const info = COLOR_BY_FIELDS[field], st = qaStatOf(field), f = QA_FIELDS[info.qa];
+    if (st.stat === "bad") {
+      const op = f.dir < 0 ? "<" : f.dir > 0 ? ">" : "|x| >";
+      return `% ${info.product === "gunw" ? "pairs" : "acq."} with ${f.lane} ${op} ${st.thr}`;
+    }
+    return st.stat === "worst" ? `${f.label}, worst` : f.label;
+  }
+  function updateQaStats(){
+    if (!META.has_qa) return;
+    const fields = Object.keys(COLOR_BY_FIELDS).filter(k=>COLOR_BY_FIELDS[k].qa);
+    FRAME_DATA.features.forEach(feat=>{
+      const p = feat.properties;
+      const sel = {gunw: qaEntries(p, true), gslc: qaEntries(p, false)};
+      fields.forEach(field=>{
+        const info = COLOR_BY_FIELDS[field], st = qaStatOf(field);
+        const values = sel[info.product].map(g=>qaValue(g, info.qa)).filter(Number.isFinite);
+        let v = qaAggregate(info.qa, values, st.stat, st.thr);
+        if (v !== undefined && QA_FIELDS[info.qa].log && st.stat !== "bad") v = Math.log10(Math.max(v, 1e-6));
+        // Absent rather than null: MapLibre reads a missing property as null,
+        // and the colour expression greys out anything that is not a number.
+        if (v === undefined) delete p[info.key]; else p[info.key] = v;
+      });
+    });
+  }
+  function qaStatHtml(field){
+    const info = COLOR_BY_FIELDS[field];
+    if (!info.qa) return "";
+    const st = qaStatOf(field), f = QA_FIELDS[info.qa];
+    const chip = (v, t, title)=>`<div class="chip${st.stat === v ? " active" : ""}" data-qastat="${v}" title="${title}">${t}</div>`;
+    const worst = f.dir === 0 ? "90th percentile of |value|" : f.dir < 0 ? "10th percentile" : "90th percentile";
+    return `<div class="qa-stat">per frame:`+
+      chip("median", "median", "Median over the frame's granules / pairs left by the filters")+
+      chip("worst", "worst", `Worst: ${worst}`)+
+      chip("bad", "% bad", "Share past the threshold")+
+      (st.stat === "bad" ? `<span>${f.dir < 0 ? "&lt;" : f.dir > 0 ? "&gt;" : "|x| &gt;"}</span>`+
+        `<input type="number" step="any" data-role="qa-thr" value="${st.thr}">` : "")+
+      `</div>`;
+  }
+  function wireQaStat(el, field){
+    const st = qaStatOf(field), styled = styleOf(field);
+    el.querySelectorAll("[data-qastat]").forEach(c=> c.addEventListener("click", ()=>{
+      if (st.stat === c.dataset.qastat) return;
+      st.stat = c.dataset.qastat;
+      // The two scales differ (a metric vs a percentage), so a fixed range
+      // set for one would only mislead on the other.
+      styled.vmin = null; styled.vmax = null;
+      COLOR_BY_FIELDS[field].label = qaLabel(field);
+      applyFilters();
+    }));
+    const thr = el.querySelector('[data-role="qa-thr"]');
+    if (thr) thr.addEventListener("change", ()=>{
+      const v = Number(thr.value);
+      if (thr.value.trim() === "" || !Number.isFinite(v)) return;
+      st.thr = v;
+      COLOR_BY_FIELDS[field].label = qaLabel(field);
+      applyFilters();
+    });
+  }
+  // The ionosphere mean is signed around an arbitrary offset: a diverging
+  // ramp centred on the middle of the range reads it best.
+  ["gunw_qa_im","gunw_qa_imd"].forEach(f=>{ styleOf(f).cmap = "Vik"; });
+
+  function fmtQa(k, v){
+    if (!Number.isFinite(v)) return "-";
+    const f = QA_FIELDS[k];
+    if (f.log && Math.abs(v) >= 1000) return v.toExponential(1);
+    return v.toFixed(f.digits) + (k === "v" || k === "l" ? "%" : "");
+  }
+  function qaLine(entries){
+    if (!META.has_qa) return "";
+    const e = entries.find(g=>g && (g.qa || g.rl != null));
+    if (!e) return `<br><span class="tdim">QA not read</span>`;
+    const q = e.qa || {};
+    const parts = [];
+    if (q.cm != null) parts.push(`coh. ${fmtQa("cm", q.cm)} (mean ${fmtQa("ca", q.ca)})`);
+    if (q.v != null) parts.push(`valid ${fmtQa("v", q.v)} &middot; largest ${fmtQa("l", q.l)} &middot; ${q.n} region${q.n === 1 ? "" : "s"}`);
+    if (q.is != null) parts.push(`iono mean ${fmtQa("im", q.im)} / median ${fmtQa("imd", q.imd)} / spread ${fmtQa("is", q.is)} / unc. ${fmtQa("iu", q.iu)} rad`);
+    const rl = qaValue(e, "rl");
+    if (Number.isFinite(rl)) parts.push(`RFI likelihood ${fmtQa("rl", rl)}${rl > 1 ? " (past the documented 0-1)" : ""}`);
+    return `<br><span class="tdim">QA: ${parts.join(" &middot; ") || "no metrics"}</span>`;
+  }
+  // One line in the frame popup, over the granules / pairs the filters leave.
+  function qaSummaryRow(p, gunw){
+    if (!META.has_qa) return "";
+    const items = qaEntries(p, gunw);
+    const read = items.filter(g=>g.qa || g.rl != null);
+    if (!items.length) return "";
+    const noun = gunw ? "pairs" : "acq.";
+    if (!read.length) return `<div class="pop-row"><span class="tdim">QA: none of the ${items.length} ${noun} read yet</span></div>`;
+    const med = k=>{
+      const vals = read.map(g=>qaValue(g, k)).filter(Number.isFinite);
+      return vals.length ? qaAggregate(k, vals, "median") : NaN;
+    };
+    const parts = [];
+    if (gunw) {
+      parts.push(`coh. ${fmtQa("cm", med("cm"))}`, `valid ${fmtQa("v", med("v"))}`, `largest ${fmtQa("l", med("l"))}`);
+      const multi = read.filter(g=>g.qa && g.qa.n > 1).length;
+      parts.push(`${multi} with &gt;1 region`, `iono spread ${fmtQa("is", med("is"))} rad`);
+    }
+    const rls = read.map(g=>qaValue(g, "rl")).filter(Number.isFinite);
+    if (rls.length) parts.push(`RFI ${fmtQa("rl", med("rl"))} (max ${fmtQa("rl", Math.max(...rls))})`);
+    return `<div class="pop-row">QA median of ${read.length}/${items.length} ${noun}: ${parts.join(" &middot; ")}</div>`;
+  }
+  function qaCsvCols(g, keys){ return keys.map(k=>{ const v = qaValue(g, k); return Number.isFinite(v) ? v : ""; }); }
+
+  function rampColor(stops, t){
+    const x = Math.max(0, Math.min(1, t)) * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x));
+    const a = stops[i], b = stops[i + 1], u = x - i;
+    const ch = (h, o)=> parseInt(h.slice(o, o + 2), 16);
+    const mix = o=> Math.round(ch(a, o) + (ch(b, o) - ch(a, o)) * u).toString(16).padStart(2, "0");
+    return `#${mix(1)}${mix(3)}${mix(5)}`;
+  }
+  // A metric's colour in the plots: bright is good and dark is bad whichever
+  // way the metric runs, on its fixed scale or the range of the frame's values.
+  function qaScale(k, values){
+    const f = QA_FIELDS[k];
+    const tf = v=> f.dir === 0 ? Math.abs(v) : f.log ? Math.log10(Math.max(v, 1e-6)) : v;
+    const vals = values.filter(Number.isFinite).map(tf);
+    let lo = f.lo ?? Math.min(...vals), hi = f.hi ?? Math.max(...vals);
+    if (!(hi > lo)) hi = lo + 1;
+    return v=>{
+      if (!Number.isFinite(v)) return "#2b2b2b";
+      const t = (tf(v) - lo) / (hi - lo);
+      return rampColor(COLORMAPS.Viridis, f.dir < 0 ? t : 1 - t);
+    };
+  }
+  // One lane per metric under a plot, beside the flag lanes; a red ring or
+  // underline marks a value past its default threshold.
+  function qaLanesSvg(entries, keys, xOf, x0, x1, yTop){
+    const rowH = 20;
+    let svg = "";
+    keys.forEach((k, r)=>{
+      const y = yTop + r * rowH + rowH / 2;
+      const color = qaScale(k, entries.map(en=>en.g ? qaValue(en.g, k) : NaN));
+      svg += `<line class="chart-grid" x1="${x0}" x2="${x1}" y1="${y}" y2="${y}" opacity="0.6"/>`+
+             `<text class="chart-row-label" x="${x0-10}" y="${y+3.5}" text-anchor="end">${QA_FIELDS[k].lane}</text>`;
+      entries.forEach(en=>{
+        const v = en.g ? qaValue(en.g, k) : NaN;
+        if (!Number.isFinite(v)) return;
+        const c = color(v), bad = qaIsBad(k, v, QA_FIELDS[k].thr);
+        const xa = xOf(en.ta).toFixed(1);
+        if (en.tb != null) {
+          const xb = xOf(en.tb).toFixed(1);
+          if (bad) svg += `<line x1="${xa}" x2="${xb}" y1="${y + 4.5}" y2="${y + 4.5}" stroke="#e5484d" stroke-width="1" opacity="0.8"/>`;
+          svg += `<line class="chart-ifg" data-i="${en.i}" x1="${xa}" x2="${xb}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="5"/>`;
+        } else {
+          svg += `<circle class="chart-dot" data-i="${en.i}" cx="${xa}" cy="${y}" r="4.5" fill="${c}"`+
+                 `${bad ? ` stroke="#e5484d" stroke-width="1.5"` : ""}/>`;
+        }
+      });
+    });
+    const legend = `QA: worse ${qaRampHtml()} better &middot; <span style="color:#e5484d">&#9644;</span> past threshold`;
+    return {svg, height: keys.length * rowH, legend};
+  }
+  function qaRampHtml(){
+    return `<span style="display:inline-block;width:46px;height:8px;vertical-align:middle;border-radius:2px;`+
+      `background:linear-gradient(90deg,${COLORMAPS.Viridis.join(",")})"></span>`;
+  }
+  let showQa = false;
+  let qaPairColor = "";
   let showFlags = false;
   let redrawChart = null;
 
@@ -2943,7 +3242,8 @@ APP_JS = r"""
     ["Counts", ["gslc_count","n_duplicate","n_modes","gunw_count"]],
     ["Mode / coverage", ["cons_mode","cons_cov","gslc_modes","gslc_pols","gunw_net","passDirection"]],
     ["Planning", ["rollout","blackout_months","blackout_month"]],
-    ["Flags", ["flag_j","flag_f","flag_o","flag_r","flag_m","flag_d"]]
+    ["Flags", ["flag_j","flag_f","flag_o","flag_r","flag_m","flag_d"]],
+    ["Quality (QA)", ["gslc_qa_rl", ...QA_GUNW.map(k=>`gunw_qa_${k}`)]]
   ];
   let cbTab = 1;   // 1: option list, 2: style
 
@@ -3274,8 +3574,11 @@ APP_JS = r"""
   const DIR_LABEL = {A:"Ascending", D:"Descending"};
 
   function granuleCsv(p, granules){
-    const rows = [["frame_id","track","frame","pass","direction","date","mode","coverage","polarization","cycle","granule_id"]];
-    granules.forEach(g=> rows.push([p.frame_idx,p.track,p.frame,p.passDirection,g.dir,g.date,g.mode,g.cov,g.pol,g.cycle,g.gid]));
+    const qa = META.has_qa ? QA_LANES.gslc : [];
+    const rows = [["frame_id","track","frame","pass","direction","date","mode","coverage","polarization","cycle","granule_id",
+                   ...qa.map(k=>`qa_${k}`)]];
+    granules.forEach(g=> rows.push([p.frame_idx,p.track,p.frame,p.passDirection,g.dir,g.date,g.mode,g.cov,g.pol,g.cycle,g.gid,
+                                    ...qaCsvCols(g, qa)]));
     return toCsv(rows);
   }
 
@@ -3327,6 +3630,7 @@ APP_JS = r"""
       <div class="pop-row">GSLC granules in CMR: ${p.gslc_count} &middot; ${p.n_modes} mode(s) &middot; ${p.n_full}F / ${p.n_partial}P</div>
       ${duplicateRow(p)}
       ${selectionRow(p)}
+      ${qaSummaryRow(p, false)}
       ${rolloutLine(p)}
       ${blackoutDetailBlock(p)}
       <div class="pop-actions">
@@ -3420,6 +3724,7 @@ APP_JS = r"""
       <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
       <div class="pop-row">Pass: ${p.passDirection}</div>
       ${gunwSummaryRows(p)}
+      ${qaSummaryRow(p, true)}
       ${rolloutLine(p)}
       ${blackoutDetailBlock(p)}
       <div class="pop-actions">
@@ -3432,8 +3737,11 @@ APP_JS = r"""
   }
 
   function gunwCsv(p, ifgs){
-    const rows = [["frame_id","track","frame","pass","ref_date","sec_date","temporal_baseline_days","mode","coverage","polarization","granule_id"]];
-    ifgs.forEach(g=> rows.push([p.frame_idx,p.track,p.frame,p.passDirection,g.ref,g.sec,g.dt,g.mode,g.cov,g.pol,g.gid]));
+    const qa = META.has_qa ? QA_GUNW : [];
+    const rows = [["frame_id","track","frame","pass","ref_date","sec_date","temporal_baseline_days","mode","coverage","polarization","granule_id",
+                   ...qa.map(k=>`qa_${k}`)]];
+    ifgs.forEach(g=> rows.push([p.frame_idx,p.track,p.frame,p.passDirection,g.ref,g.sec,g.dt,g.mode,g.cov,g.pol,g.gid,
+                                ...qaCsvCols(g, qa)]));
     return toCsv(rows);
   }
 
@@ -3497,13 +3805,14 @@ APP_JS = r"""
     if (!chartPoints.length) return `<div class="stat-line">No interferograms to plot.</div>`;
 
     const withFlags = showFlags && META.has_flags;
-    // The flag lanes are labelled in the left margin, like the GSLC plot's, so
-    // it widens to fit "RFI mitig." when they are shown; a label inside the
-    // plot area would sit under the earliest interferograms.
-    const padL = withFlags ? 96 : 52, padR = 24, padT = 12, padB = 30;
+    const qaKeys = showQa && META.has_qa ? QA_LANES.gunw : [];
+    // The flag and QA lanes are labelled in the left margin, like the GSLC
+    // plot's, so it widens to fit "RFI mitig." when they are shown; a label
+    // inside the plot area would sit under the earliest interferograms.
+    const padL = withFlags || qaKeys.length ? 96 : 52, padR = 24, padT = 12, padB = 30;
     const W = chartWidth();
     // A card the user has made taller gives the baseline axis the extra room.
-    const H = Math.max(280, chartRoom() - (withFlags ? FLAG_FIELDS.length * 20 + 12 : 0));
+    const H = Math.max(280, chartRoom() - (withFlags ? FLAG_FIELDS.length * 20 + 12 : 0) - (qaKeys.length ? qaKeys.length * 20 + 12 : 0));
     let [t0, t1] = spanWithBlackouts(p, Math.min(...chartPoints.map(pt=>pt.ta)), Math.max(...chartPoints.map(pt=>pt.tb)));
     if (t1 === t0) { t0 -= 15 * DAY_MS; t1 += 15 * DAY_MS; }
     const pad = (t1 - t0) * 0.03;
@@ -3528,10 +3837,15 @@ APP_JS = r"""
 
     const keys = uniqSorted(chartPoints.map(pt=>pt.key));
     const colorOf = key => CHART_PALETTE[keys.indexOf(key) % CHART_PALETTE.length];
+    // Pairs can instead be coloured by one QA metric, so the poor ones stand
+    // out in the network itself.
+    const qaG = pt => pt.group.find(g=>g.qa) || pt.ifg;
+    const byQa = qaPairColor && META.has_qa ? qaScale(qaPairColor, chartPoints.map(pt=>qaValue(qaG(pt), qaPairColor))) : null;
     const net = gunwNetwork(chartPoints);
     const segs = chartPoints.map((pt,i)=>{
       const y = yOf(pt.ifg.dt).toFixed(1);
-      const xa = xOf(pt.ta).toFixed(1), xb = xOf(pt.tb).toFixed(1), c = colorOf(pt.key);
+      const xa = xOf(pt.ta).toFixed(1), xb = xOf(pt.tb).toFixed(1);
+      const c = byQa ? byQa(qaValue(qaG(pt), qaPairColor)) : colorOf(pt.key);
       // End dots keep back-to-back pairs of one baseline from reading as one line;
       // a red halo marks pairs cut off from the main network.
       const halo = net.offMain(pt.ta) ? `<line class="chart-ifg-off" x1="${xa}" x2="${xb}" y1="${y}" y2="${y}"/>` : "";
@@ -3545,7 +3859,8 @@ APP_JS = r"""
       return `<rect class="chart-gap" x="${x0.toFixed(1)}" y="${padT}" width="${(x1 - x0).toFixed(1)}" height="${H - padT - padB}">`+
              `<title>Network gap: no interferogram connects ${fmt(lo)} to ${fmt(hi)}</title></rect>`;
     }).join("");
-    const legend = keys.map(k=>`<span style="color:${colorOf(k)}">&#9644;</span> ${k}`)
+    const legend = (byQa ? [`pairs by ${QA_FIELDS[qaPairColor].lane}: worse ${qaRampHtml()} better`]
+                         : keys.map(k=>`<span style="color:${colorOf(k)}">&#9644;</span> ${k}`))
       .concat(blackoutWindows.length ? [`<span style="color:#8c8c8c">&#9632;</span> blackout (${p.blackout_label})`] : [])
       .concat(net.breaks.length ? [`<span style="color:#e5484d">&#9632;</span> network gap`] : [])
       .concat(net.components > 1 ? [`<span style="color:#e5484d">&#9644;</span> cut off from the main network`] : [])
@@ -3556,16 +3871,21 @@ APP_JS = r"""
       ? flagLanesSvg(chartPoints.map((pt,i)=>({i, ta: pt.ta, tb: pt.tb, g: pt.group.find(g=>g.fl) || pt.ifg})),
                      xOf, padL, W - padR, H + 4)
       : null;
-    const HH = flags ? H + 8 + flags.height : H;
+    const qaTop = flags ? H + 8 + flags.height + 4 : H + 4;
+    const qaLanes = qaKeys.length
+      ? qaLanesSvg(chartPoints.map((pt,i)=>({i, ta: pt.ta, tb: pt.tb, g: qaG(pt)})), qaKeys, xOf, padL, W - padR, qaTop)
+      : null;
+    const HH = qaLanes ? qaTop + 4 + qaLanes.height : (flags ? H + 8 + flags.height : H);
     return `<svg id="chart-svg" width="${W}" height="${HH}" viewBox="0 0 ${W} ${HH}" role="img"
-      aria-label="GUNW interferograms by temporal baseline">${bands}${gaps}${xTicks}${yTicks}${axis}${segs}${flags ? flags.svg : ""}</svg>`+
-      `<div class="chart-sub">${legend}${flags ? " &middot; " + flags.legend : ""}</div>`;
+      aria-label="GUNW interferograms by temporal baseline">${bands}${gaps}${xTicks}${yTicks}${axis}${segs}${flags ? flags.svg : ""}${qaLanes ? qaLanes.svg : ""}</svg>`+
+      `<div class="chart-sub">${legend}${flags ? " &middot; " + flags.legend : ""}${qaLanes ? " &middot; " + qaLanes.legend : ""}</div>`;
   }
 
   function showGunwPlot(p, ifgs){
     document.getElementById("chart-title").textContent =
       `Frame ${p.frame_idx} (Track ${p.track} / Frame ${p.frame}) - interferograms by temporal baseline`;
     const refs = ifgs.map(g=>g.ref).sort(), secs = ifgs.map(g=>g.sec).sort();
+    document.getElementById("chart-qa-color-ctl").hidden = !META.has_qa;
     redrawChart = ()=>{ document.getElementById("chart-body").innerHTML = gunwPlotSvg(ifgs, p); };
     redrawChart();
     const net = gunwNetwork(chartPoints);
@@ -3697,9 +4017,12 @@ APP_JS = r"""
     const padL = 96, padR = 24, padT = 10, padB = 30, rowH = 34;
     const W = chartWidth();
     const withFlags = showFlags && META.has_flags;
+    const qaKeys = showQa && META.has_qa ? QA_LANES.gslc : [];
     const flagTop = padT + rows.length * rowH + 6;
     const flagH = withFlags ? FLAG_FIELDS.length * 20 + 6 : 0;
-    const H = padT + rows.length * rowH + flagH + padB;
+    const qaTop = flagTop + flagH;
+    const qaH = qaKeys.length ? qaKeys.length * 20 + 6 : 0;
+    const H = padT + rows.length * rowH + flagH + qaH + padB;
     let [t0, t1] = spanWithBlackouts(p, chartPoints[0].t, chartPoints[chartPoints.length-1].t);
     if (t1 === t0) { t0 -= 15 * DAY_MS; t1 += 15 * DAY_MS; }
     const pad = (t1 - t0) * 0.03;
@@ -3733,14 +4056,18 @@ APP_JS = r"""
     const flags = withFlags
       ? flagLanesSvg(chartPoints.map((pt,i)=>({i, ta: pt.t, g: pt.key === DUP_ROW ? null : pt.g})), xOf, padL, W - padR, flagTop)
       : null;
+    const qaLanes = qaKeys.length
+      ? qaLanesSvg(chartPoints.map((pt,i)=>({i, ta: pt.t, g: pt.key === DUP_ROW ? null : pt.g})), qaKeys, xOf, padL, W - padR, qaTop)
+      : null;
     const shapeKey = uniqSorted(chartPoints.map(pt=>pt.dir)).map(d=>
       d === "D" ? "&#9670; descending" : d === "A" ? "&#9679; ascending" : `? ${d}`)
       .concat(blackoutWindows.length ? [`<span style="color:#8c8c8c">&#9632;</span> blackout (${p.blackout_label})`] : [])
       .concat(flags ? [flags.legend] : [])
+      .concat(qaLanes ? [qaLanes.legend] : [])
       .join(" &middot; ");
 
     return `<svg id="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="GSLC acquisitions by mode over time">${bands}${ticks}${lanes}${dots}${flags ? flags.svg : ""}</svg>`+
+      aria-label="GSLC acquisitions by mode over time">${bands}${ticks}${lanes}${dots}${flags ? flags.svg : ""}${qaLanes ? qaLanes.svg : ""}</svg>`+
       `<div class="chart-sub">${shapeKey}</div>`;
   }
 
@@ -3752,6 +4079,7 @@ APP_JS = r"""
     document.getElementById("chart-sub").textContent = dated.length
       ? `${dated.length} GSLC granules${dup} - ${dated[0]} to ${dated[dated.length-1]}`
       : "No dated GSLC granules";
+    document.getElementById("chart-qa-color-ctl").hidden = true;
     redrawChart = ()=>{ document.getElementById("chart-body").innerHTML = modeTimelineSvg(granules, p); };
     redrawChart();
     document.getElementById("chart-modal").hidden = false;
@@ -3784,6 +4112,16 @@ APP_JS = r"""
     showFlags = e.target.checked;
     if (redrawChart) redrawChart();
   });
+  document.getElementById("chart-qa").addEventListener("change", (e)=>{
+    showQa = e.target.checked;
+    if (redrawChart) redrawChart();
+  });
+  document.getElementById("chart-qa-color").innerHTML = `<option value="">by mode</option>`+
+    QA_LANES.gunw.map(k=>`<option value="${k}">by ${QA_FIELDS[k].lane}</option>`).join("");
+  document.getElementById("chart-qa-color").addEventListener("change", (e)=>{
+    qaPairColor = e.target.value;
+    if (redrawChart) redrawChart();
+  });
   // Only a click that starts and ends on the backdrop closes the plot: dragging
   // the card's resize corner past its edge ends on the backdrop too.
   let modalDownOnBackdrop = false;
@@ -3805,17 +4143,17 @@ APP_JS = r"""
     if (pt.ifg) {
       chartTip.innerHTML = `<b>${pt.ifg.ref} &rarr; ${pt.ifg.sec}</b> &middot; ${pt.ifg.dt} days<br>`+
         `<span class="tdim">${pt.key} &middot; ${pt.group.map(g=>g.pol).join(", ")}</span><br>`+
-        pt.group.map(g=>`<span class="tdim">${g.gid}</span>`).join("<br>") + flagLine(pt.group);
+        pt.group.map(g=>`<span class="tdim">${g.gid}</span>`).join("<br>") + flagLine(pt.group) + qaLine(pt.group);
     } else if (pt.group) {
       chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.modeKey} &middot; ${pt.group.length} granules<br>`+
-        pt.group.map(g=>`<span class="tdim">${g.pol} &middot; ${DIR_LABEL[g.dir] || g.dir} &middot; ${g.gid}</span>`).join("<br>") + flagLine(pt.group);
+        pt.group.map(g=>`<span class="tdim">${g.pol} &middot; ${DIR_LABEL[g.dir] || g.dir} &middot; ${g.gid}</span>`).join("<br>") + flagLine(pt.group) + qaLine(pt.group);
     } else {
       const stacked = pt.stack > 1
         ? `<br><span class="tdim">${pt.stack} granules here (${pt.stack - 1} duplicate) - showing the top one</span>`
         : "";
       chartTip.innerHTML = `<b>${pt.g.date}</b> &middot; ${pt.key}<br>`+
         `<span class="tdim">${pt.g.pol} &middot; ${DIR_LABEL[pt.dir] || pt.dir} &middot; cycle ${pt.g.cycle}</span><br>`+
-        `<span class="tdim">${pt.g.gid}</span>${stacked}` + flagLine([pt.g]);
+        `<span class="tdim">${pt.g.gid}</span>${stacked}` + flagLine([pt.g]) + qaLine([pt.g]);
     }
     // Unhide first: a display:none tip measures 0 wide and would defeat the clamp.
     chartTip.hidden = false;
@@ -4299,6 +4637,13 @@ def main(argv: list[str] | None = None) -> None:
         "adds flag colouring and flag lanes in the per-frame plots.",
     )
     parser.add_argument(
+        "--granule-qa",
+        type=Path,
+        default=None,
+        help="Optional per-granule QA cache (from collect_granule_qa.py); adds "
+        "the Quality colourings and QA lanes in the per-frame plots.",
+    )
+    parser.add_argument(
         "--calval-sites",
         type=Path,
         default=CALVAL_SITES,
@@ -4393,6 +4738,11 @@ def main(argv: list[str] | None = None) -> None:
             frame_data, load_granule_flags(args.granule_flags)
         )
         print(f"  flags for {n_flagged} granules / interferograms")
+    n_qa = 0
+    if args.granule_qa is not None:
+        print(f"Loading granule QA metrics from {args.granule_qa}")
+        n_qa = attach_granule_qa(frame_data, load_granule_flags(args.granule_qa))
+        print(f"  QA metrics for {n_qa} granules / interferograms")
 
     catalog_path = args.gslc_catalog if args.gslc_catalog is not None else args.gslc_db
     meta = {
@@ -4421,6 +4771,7 @@ def main(argv: list[str] | None = None) -> None:
         "has_reference": reference is not None,
         "has_gunw": gunw is not None,
         "has_flags": n_flagged > 0,
+        "has_qa": n_qa > 0,
         "rollout_options": rollout_options,
         "rollout_source": args.rollout.name,
         "n_gunw": sum(
