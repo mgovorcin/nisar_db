@@ -4447,8 +4447,10 @@ APP_JS = r"""
   // ---------- tectonic plates ----------
   // Bird (2003), PB2002, via fraxen/tectonicplates on GitHub, which allows
   // any origin. Boundaries first; plate names on a second click.
-  // Adapted from the geepers UNR grid viewer (scripts/browse_unr_grid.html,
-  // opera-adt/geepers): the same files, cycle and label placement.
+  // Adapted from geepers (https://github.com/opera-adt/geepers,
+  // scripts/browse_unr_grid.html), Copyright (c) 2025-2026 California
+  // Institute of Technology, Apache License 2.0: the same files, cycle and
+  // label placement.
   const PLATES_URL = "https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/";
   let platesLoading = null, plateNamesLoading = null;
   async function fetchPlates(name){
