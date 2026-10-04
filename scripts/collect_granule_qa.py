@@ -52,6 +52,7 @@ import argparse
 import io
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import get_context
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -231,7 +232,9 @@ def collect(
     say(f"{len(qa)} cached, {len(todo)} to read with {workers} workers")
     failed: dict[str, str] = {}
     t0 = time.time()
-    with ProcessPoolExecutor(workers) as pool:
+    # Fresh worker processes rather than forked copies: a caller as large as
+    # the viewer helper after a global build would be copied into each one.
+    with ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool:
         futures = {pool.submit(_read_or_error, gid): gid for gid in todo}
         for n, fut in enumerate(as_completed(futures), 1):
             gid = futures[fut]

@@ -30,6 +30,7 @@ it can also be run by hand::
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -47,6 +48,8 @@ BLACKOUT_JSON = REPO / "catalog" / "opera-nisar-disp-blackout-dates.json"
 GRANULE_FLAGS = REPO / "catalog" / "granule_flags.json.gz"
 GRANULE_QA = REPO / "catalog" / "granule_qa.json.gz"
 SCOPES = ("na", "globe", "bbox")
+#: Prefix of the last output line, which carries the built page's summary.
+META_LINE = "@@meta "
 SCOPE_LABELS = {"na": "OPERA North America", "globe": "Globe", "bbox": "Screen view"}
 # Coordinates to ~10 m: plenty for a frame outline, and it keeps a 30,000-frame
 # page from carrying full float precision.
@@ -358,10 +361,43 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="TrackFrame GeoPackage; downloaded next to --output when omitted.",
     )
+    parser.add_argument(
+        "--collect-flags",
+        action="store_true",
+        help="Read the granule flags the caches miss (needs --cache-dir, ~/.netrc).",
+    )
+    parser.add_argument(
+        "--collect-qa",
+        action="store_true",
+        help="Read the QA metrics the caches miss (needs --cache-dir, ~/.netrc).",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Local flag / QA caches, merged with the repository's.",
+    )
     args = parser.parse_args(argv)
     bbox = tuple(float(v) for v in args.bbox.split(",")) if args.bbox else None
+
+    def say(msg: str) -> None:
+        # One line per step: the viewer helper reads them as progress.
+        print(msg, flush=True)
+
+    if args.trackframe_gpkg is None:
+        say("Fetching the NISAR frame database")
     gpkg = args.trackframe_gpkg or get_trackframe_db(output_dir=args.output.parent)
-    build_view(args.scope, args.output, gpkg, bbox)
+    meta = build_view(
+        args.scope,
+        args.output,
+        gpkg,
+        bbox,
+        progress=say,
+        collect_flags=args.collect_flags,
+        collect_qa=args.collect_qa,
+        cache_dir=args.cache_dir,
+    )
+    say(META_LINE + json.dumps({"n_frames": meta["n_frames"]}))
 
 
 if __name__ == "__main__":

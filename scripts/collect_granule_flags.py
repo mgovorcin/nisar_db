@@ -39,6 +39,7 @@ import json
 import netrc
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import get_context
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -216,7 +217,9 @@ def collect(
     t0 = time.time()
     # h5py serialises every HDF5 call behind one lock, so remote reads only run
     # in parallel across processes, not threads.
-    with ProcessPoolExecutor(workers) as pool:
+    # Fresh worker processes rather than forked copies: a caller as large as
+    # the viewer helper after a global build would be copied into each one.
+    with ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool:
         futures = {pool.submit(_read_or_error, gid): gid for gid in todo}
         for n, fut in enumerate(as_completed(futures), 1):
             gid = futures[fut]

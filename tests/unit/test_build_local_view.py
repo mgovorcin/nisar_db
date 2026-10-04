@@ -10,6 +10,7 @@ from types import ModuleType
 import geopandas as gpd
 import pytest
 from shapely.geometry import box
+from typing_extensions import Self
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 GUNW = (
@@ -114,3 +115,76 @@ def test_merged_cache_collects_only_the_missing_granules(tmp_path: Path) -> None
     assert merged == {"A": {"r": 1}, "B": {"r": 0}, "C": {"r": 0}}
     # Without a collector the caches are only read.
     assert builder.merged_cache(repo, local, ["Z"]) == merged
+
+
+class _FakeBuild:
+    """Stands in for ``subprocess.Popen`` of build_local_view.py."""
+
+    def __init__(self, lines: list[str], returncode: int) -> None:
+        self.stdout = iter(line + "\n" for line in lines)
+        self.returncode = returncode
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
+
+
+def test_build_runs_as_a_child_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load("qa_browse_server")
+    builds = helper.ViewBuilds(tmp_path)
+    seen: list[list[str]] = []
+    lines = [
+        "Selecting frames",
+        "Building 3 frames",
+        helper.META_LINE + '{"n_frames": 3}',
+    ]
+
+    def popen(cmd: list[str], **_kwargs: object) -> _FakeBuild:
+        seen.append(cmd)
+        return _FakeBuild(lines, 0)
+
+    monkeypatch.setattr(helper.subprocess, "Popen", popen)
+    job = {
+        "id": "bbox-1",
+        "scope": "bbox",
+        "bbox": [1, 2, 3, 4],
+        "collect_flags": True,
+        "collect_qa": False,
+    }
+    builds._job = dict(job, state="running")
+    builds._run(job)
+
+    status = builds.status()
+    assert status["state"] == "done" and status["n_frames"] == 3
+    assert status["view"] == "/view/bbox-1"
+    assert "--collect-flags" in seen[0] and "--collect-qa" not in seen[0]
+    assert "--bbox=1,2,3,4" in seen[0]
+
+
+def test_a_killed_build_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load("qa_browse_server")
+    builds = helper.ViewBuilds(tmp_path)
+    monkeypatch.setattr(
+        helper.subprocess,
+        "Popen",
+        lambda _cmd, **_kw: _FakeBuild(["flags: 200/900 read"], -9),
+    )
+    job = {
+        "id": "globe-1",
+        "scope": "globe",
+        "bbox": None,
+        "collect_flags": False,
+        "collect_qa": False,
+    }
+    builds._job = dict(job, state="running")
+    builds._run(job)
+
+    status = builds.status()
+    assert status["state"] == "error"
+    assert "killed (signal 9)" in status["step"]

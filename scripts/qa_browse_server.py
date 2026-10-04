@@ -59,6 +59,8 @@ import json
 import netrc
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -470,6 +472,8 @@ class ViewerPage:
 
 
 VIEW_ID = re.compile(r"^[a-z]+-[0-9TZ]+$")
+#: Prefix of build_local_view.py's last output line (its summary as JSON).
+META_LINE = "@@meta "
 
 # Pages are 10-70 MB of mostly JSON and compress about six-fold, which is what
 # makes them load quickly through an SSH or VS Code port forward. One
@@ -558,34 +562,59 @@ class ViewBuilds:
             self._job.update(fields)
 
     def _run(self, job: dict) -> None:
-        try:
-            # Heavy (geopandas and the viewer generator); only builds need it.
-            from build_local_view import build_view
-            from nisar_db.geodb import get_trackframe_db
-
-            gpkg = self.trackframe_gpkg
-            if gpkg is None:
-                self._update(step="Fetching the NISAR frame database")
-                gpkg = get_trackframe_db(output_dir=self.root.parent)
-            out = self.root / f"{job['id']}.html"
-            meta = build_view(
-                job["scope"],
-                out,
-                Path(gpkg),
-                tuple(job["bbox"]) if job["bbox"] else None,
-                progress=lambda msg: self._update(step=msg),
-                collect_flags=job["collect_flags"],
-                collect_qa=job["collect_qa"],
-                cache_dir=self.root.parent,
-            )
+        # The build runs as its own process: its memory (about 10 GB for the
+        # globe) is returned when it ends, and a build that fails or is
+        # killed cannot take the helper down with it.
+        out = self.root / f"{job['id']}.html"
+        self.root.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            "-u",
+            str(Path(__file__).with_name("build_local_view.py")),
+            "--scope",
+            job["scope"],
+            "--output",
+            str(out),
+            "--cache-dir",
+            str(self.root.parent),
+        ]
+        if job["bbox"]:
+            cmd += ["--bbox=" + ",".join(str(v) for v in job["bbox"])]
+        if self.trackframe_gpkg is not None:
+            cmd += ["--trackframe-gpkg", str(self.trackframe_gpkg)]
+        if job["collect_flags"]:
+            cmd.append("--collect-flags")
+        if job["collect_qa"]:
+            cmd.append("--collect-qa")
+        tail: list[str] = []
+        meta: dict = {}
+        with subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        ) as proc:
+            assert proc.stdout is not None
+            for raw in proc.stdout:
+                line = raw.strip()
+                if not line:
+                    continue
+                if line.startswith(META_LINE):
+                    meta = json.loads(line[len(META_LINE) :])
+                    continue
+                tail = (tail + [line])[-5:]
+                # Library warnings are kept for an error report, not shown.
+                if "Warning" not in line and not line.startswith(("  ", "warnings.")):
+                    self._update(step=line)
+        if proc.returncode == 0 and meta:
             self._update(
                 state="done",
                 view=f"/view/{job['id']}",
                 n_frames=meta["n_frames"],
                 finished=time.time(),
             )
-        except Exception as exc:  # noqa: BLE001 - reported to the page
-            self._update(state="error", step=f"{type(exc).__name__}: {exc}")
+        else:
+            reason = tail[-1] if tail else f"exit code {proc.returncode}"
+            if proc.returncode and proc.returncode < 0:
+                reason = f"the build was killed (signal {-proc.returncode}); {reason}"
+            self._update(state="error", step=reason)
 
     def page(self, view_id: str) -> bytes | None:
         """Return a built page, marked as served by the helper."""
