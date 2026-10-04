@@ -1328,9 +1328,12 @@ APP_CSS = r"""
     #sidebar.open{transform:none;}
     #sidebar-backdrop{position:fixed;inset:0;z-index:39;background:rgb(0 0 0 / .45);}
     #sidebar.open ~ #sidebar-backdrop{display:block;}
-    #edl-btn{right:72px;}
-    #srch-btn{right:96px;}
-    #sidebar-close{display:block;position:absolute;top:9px;right:40px;background:none;border:none;
+    /* The close button takes the corner; the theme, key and search icons
+       step left of it. */
+    #theme-toggle{right:40px;}
+    #edl-btn{right:64px;}
+    #srch-btn{right:88px;}
+    #sidebar-close{display:block;position:absolute;top:9px;right:6px;background:none;border:none;
       color:var(--text-dim);font-size:22px;line-height:1;padding:2px 6px;cursor:pointer;}
     #menu-btn{display:flex;align-items:center;justify-content:center;position:absolute;top:10px;left:10px;z-index:7;
       width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:var(--scrim);color:var(--text);

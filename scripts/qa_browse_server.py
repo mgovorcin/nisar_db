@@ -427,21 +427,29 @@ class QaCache:
 class ViewerPage:
     """The viewer page the helper serves: a local file, or the published page.
 
-    The published page is fetched again at most every ``ttl`` seconds, so a
-    long-running helper follows the weekly rebuild.
+    A local file is read again whenever it changes; the published page is
+    fetched again at most every ``ttl`` seconds, so a long-running helper
+    follows the weekly rebuild.
     """
 
     def __init__(self, source: str, ttl: float = 600.0) -> None:
         self.source = source
         self.ttl = ttl
         self._html: bytes | None = None
-        self._at = 0.0
+        self._stamp: float | None = None
         self._lock = threading.Lock()
+
+    def _current_stamp(self) -> float:
+        if self.source.startswith(("http://", "https://")):
+            # Changes once per ``ttl`` window.
+            return float(int(time.time() // self.ttl))
+        return Path(self.source).stat().st_mtime
 
     def html(self) -> bytes:
         """Return the page, marked as served by the helper."""
         with self._lock:
-            if self._html is None or time.time() - self._at > self.ttl:
+            stamp = self._current_stamp()
+            if self._html is None or stamp != self._stamp:
                 if self.source.startswith(("http://", "https://")):
                     resp = requests.get(self.source, timeout=60)
                     resp.raise_for_status()
@@ -451,7 +459,7 @@ class ViewerPage:
                 self._html = text.replace(
                     "<head>", f"<head>{SAME_ORIGIN_MARK}", 1
                 ).encode()
-                self._at = time.time()
+                self._stamp = stamp
             return self._html
 
 
