@@ -1066,14 +1066,15 @@ APP_CSS = r"""
   #product-ctrl button{background:none;border:none;color:var(--text);padding:3px 10px;border-radius:4px;cursor:pointer;font:inherit;}
   #product-ctrl button.active{background:var(--accent);color:var(--bg);font-weight:600;}
   #map.has-product #pass-ctrl{top:48px;}
-  #map.has-product #search{top:86px;}
+  /* Search beside the GSLC / GUNW switch (or, without it, beside the pass switch). */
+  #map.has-product #search{top:10px;left:138px;}
   #pass-ctrl{position:absolute;top:10px;left:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #pass-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
   #click-ctrl{position:absolute;top:48px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;}
   #click-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
-  #search{position:absolute;top:48px;left:10px;z-index:6;width:268px;}
+  #search{position:absolute;top:10px;left:186px;z-index:6;width:268px;}
   #search input{width:100%;box-sizing:border-box;background:var(--scrim);color:var(--text);border:1px solid var(--border);
     border-radius:6px;padding:6px 9px;font:inherit;font-size:11.5px;}
   #search input:focus{outline:2px solid var(--accent);outline-offset:-1px;}
@@ -1087,6 +1088,9 @@ APP_CSS = r"""
   #search-results .msg{padding:6px 9px;color:var(--text-dim);font-size:11px;}
   #top-hint{position:absolute;bottom:24px;left:10px;background:var(--scrim);color:var(--text-dim);
     font-size:11.5px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);pointer-events:none;z-index:5;}
+  /* MapLibre's top-left controls (zoom, compass) sit under the pass switch. */
+  .maplibregl-ctrl-top-left{top:50px;}
+  #map.has-product .maplibregl-ctrl-top-left{top:88px;}
   #basemap-ctrl{position:absolute;top:10px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #basemap-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
@@ -1210,6 +1214,8 @@ APP_CSS = r"""
   #map-legend .ml-head .ml-grip{color:var(--text-dim);margin-right:4px;letter-spacing:-1px;}
   .maplibregl-ctrl-group button.overlay-btn{display:flex;align-items:center;justify-content:center;color:#303030;}
   .maplibregl-ctrl-group button.overlay-btn.active{background:#b2daf7;color:#14425e;}
+  /* The geoscience box stands apart from the frame tools below it. */
+  .maplibregl-ctrl-bottom-right .maplibregl-ctrl.geo-group{margin-bottom:22px;}
   .overlay-panel{position:absolute;right:52px;bottom:30px;z-index:6;width:300px;max-height:min(60vh,520px);overflow-y:auto;
     background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;
     box-shadow:0 4px 16px rgb(0 0 0 / .3);}
@@ -1224,7 +1230,7 @@ APP_CSS = r"""
   .eq-color input[hidden]{display:none;}
   .eq-legend{display:flex;flex-wrap:wrap;gap:3px 9px;margin-top:6px;font-size:10.5px;color:var(--text-dim);}
   .eq-legend i{display:inline-block;border-radius:50%;margin-right:3px;vertical-align:-1px;border:1px solid #fff;}
-  #browse-card{position:absolute;left:10px;top:128px;z-index:5;width:360px;max-width:calc(100% - 20px);
+  #browse-card{position:absolute;left:52px;top:98px;z-index:5;width:360px;max-width:calc(100% - 20px);
     max-height:calc(100% - 140px);overflow:auto;resize:both;background:var(--panel);border:1px solid var(--border);
     border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
   #browse-card[hidden]{display:none;}
@@ -1375,6 +1381,7 @@ APP_CSS = r"""
     #basemap-ctrl{top:96px;left:10px;right:auto;flex-wrap:wrap;gap:6px;padding:5px 7px;font-size:11px;}
     #top-hint,.maplibregl-ctrl-zoom-in,.maplibregl-ctrl-zoom-out{display:none !important;}
     #click-ctrl{top:134px;left:10px;right:auto;padding:5px 7px;}
+    .maplibregl-ctrl-top-left,#map.has-product .maplibregl-ctrl-top-left{top:162px;}
     .maplibregl-ctrl-bottom-right{margin-bottom:env(safe-area-inset-bottom);}
     .overlay-panel{left:8px;right:56px;width:auto;bottom:calc(8px + env(safe-area-inset-bottom));max-height:52vh;}
     #browse-card{left:8px;right:8px;width:auto;max-width:none;top:auto;bottom:calc(8px + env(safe-area-inset-bottom));
@@ -3900,7 +3907,8 @@ APP_JS = r"""
     zoom: META.view_scope === "globe" ? 1 : 1.4,
     attributionControl: true
   });
-  map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+  // Zoom and compass top left, under the All / Asc / Desc switch.
+  map.addControl(new maplibregl.NavigationControl(), "top-left");
 
   // Frame summaries on hover are opt-in; the switch sits above the globe toggle.
   let hoverEnabled = false;
@@ -3933,7 +3941,7 @@ APP_JS = r"""
   // Overlay switches stack above the globe toggle. Each click steps through
   // off -> layer -> layer + panel -> off, so the map can carry the layer
   // without its panel in the way.
-  const overlayState = {snow:0, rollout:0, colorby:0, quake:0, volcano:0};
+  const overlayState = {snow:0, rollout:0, colorby:0, quake:0, volcano:0, plates:0};
   // Point layers (earthquakes, volcanoes) step through: points, options,
   // legend, labels, off. The area overlays step through layer, panel, off.
   const FIVE_STEP = new Set(["quake", "volcano"]);
@@ -3957,6 +3965,18 @@ APP_JS = r"""
       onRemove(){ this._wrap.remove(); }
     };
   }
+  // Several overlay buttons in one box, like the zoom buttons.
+  function overlayGroupControl(items, className){
+    return {
+      onAdd(){
+        this._wrap = document.createElement("div");
+        this._wrap.className = `maplibregl-ctrl maplibregl-ctrl-group ${className || ""}`;
+        items.forEach(it=> this._wrap.appendChild(overlayControl(it.key, it.title, it.svg).onAdd().firstChild));
+        return this._wrap;
+      },
+      onRemove(){ this._wrap.remove(); }
+    };
+  }
   const HAS_ROLLOUT_DATA = typeof ROLLOUT_DATA !== "undefined" && ROLLOUT_DATA.features.length > 0;
   if (HAS_ROLLOUT_DATA) map.addControl(overlayControl("rollout", "Rollout regions overview",
     // A flag planted on an outlined region: a rollout area, not a map layer.
@@ -3970,16 +3990,7 @@ APP_JS = r"""
     `<path d="M8 17.2 7 20M11 17.2 10 20"/>`+
     `<path d="M16 16.6v4.8M13.9 17.8l4.2 2.4M13.9 20.2l4.2-2.4"/></g></svg>`), "bottom-right");
 
-  map.addControl(overlayControl("quake", "Earthquakes (USGS)",
-    // A seismogram trace.
-    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
-    `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`), "bottom-right");
 
-  map.addControl(overlayControl("volcano", "Volcanoes",
-    // A cone with a plume.
-    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
-    `stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 20.5h19l-6.2-9.2h-6.6z"/><path d="M10.5 11.3 12 13l1.5-1.7"/>`+
-    `<path d="M12 8.5c-.8-1.1-.3-2.4.8-2.9.4-1.3 2-1.8 3-1M9 7.5c-1-.4-1.3-1.6-.6-2.4"/></g></svg>`), "bottom-right");
 
   // ---------- colour panel ----------
   // Its button steps: panel -> legend on the map -> off. Inside the panel the
@@ -4176,6 +4187,23 @@ APP_JS = r"""
     `d="M12 3a9 9 0 0 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.7 17 3 12 3z"/>`+
     `<circle cx="7.5" cy="11.5" r="1.4" fill="currentColor"/><circle cx="10" cy="7.4" r="1.4" fill="currentColor"/>`+
     `<circle cx="14.6" cy="7.4" r="1.4" fill="currentColor"/><circle cx="17.2" cy="11" r="1.4" fill="currentColor"/></svg>`), "bottom-right");
+  // Plates, earthquakes and volcanoes: one box above the frame colouring,
+  // set apart from the frame tools below it.
+  map.addControl(overlayGroupControl([
+    {key:"plates", title:"Tectonic plates", svg:
+    // Same glyph as the geepers viewer's plates tool.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 9 9l5 3-5 4 3 5"/><path d="M3 9h3M18 15h3"/></g></svg>`},
+    {key:"quake", title:"Earthquakes (USGS)", svg:
+    // A seismogram trace.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`},
+    {key:"volcano", title:"Volcanoes", svg:
+    // A cone with a plume.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 20.5h19l-6.2-9.2h-6.6z"/><path d="M10.5 11.3 12 13l1.5-1.7"/>`+
+    `<path d="M12 8.5c-.8-1.1-.3-2.4.8-2.9.4-1.3 2-1.8 3-1M9 7.5c-1-.4-1.3-1.6-.6-2.4"/></g></svg>`}
+  ], "geo-group"), "bottom-right");
 
   function setOverlay(key, level){
     if (key === "colorby") {
@@ -4202,6 +4230,13 @@ APP_JS = r"""
     if (btn) {
       btn.classList.toggle("active", on);
       btn.title = `${btn.getAttribute("aria-label")} - ${["off","layer shown","layer and panel shown"][level]}; click for ${["layer","panel","off"][level]}`;
+    }
+    // Plates have no panel: boundaries, then plate names, then off.
+    if (key === "plates") {
+      if (btn) btn.title = `${btn.getAttribute("aria-label")} - ${["off","boundaries shown","boundaries and plate names shown"][level]}; `+
+        `click for ${["boundaries","plate names","off"][level]}`;
+      showPlates(level);
+      return;
     }
     document.getElementById(`${key}-panel`).hidden = level < 2;
     if (FIVE_STEP.has(key)) {
@@ -4432,6 +4467,94 @@ APP_JS = r"""
   }
   map.on("styledata", raisePointLayers);
 
+
+  // ---------- tectonic plates ----------
+  // Bird (2003), PB2002, via fraxen/tectonicplates on GitHub, which allows
+  // any origin. Boundaries first; plate names on a second click.
+  // Adapted from geepers (https://github.com/opera-adt/geepers,
+  // scripts/browse_unr_grid.html), Copyright (c) 2025-2026 California
+  // Institute of Technology, Apache License 2.0: the same files, cycle and
+  // label placement.
+  const PLATES_URL = "https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/";
+  let platesLoading = null, plateNamesLoading = null;
+  async function fetchPlates(name){
+    const r = await fetch(PLATES_URL + name);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+  // One label point per plate: the mean direction of its boundary, which
+  // needs no unwrapping at the antimeridian, where the file cuts plates.
+  function plateLabelPoints(plates){
+    const RAD = Math.PI / 180, sums = {};
+    for (const f of plates.features) {
+      const sum = sums[f.properties.PlateName] ??= [0, 0, 0];
+      const polygons = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+      for (const [ring] of polygons) {
+        for (let i = 1; i < ring.length; i++) {
+          const [x0, y0] = ring[i - 1], [x1, y1] = ring[i];
+          // Edges along the antimeridian or at a pole are cuts, not plate boundary.
+          if (Math.min(Math.abs(x0), Math.abs(x1)) > 179.999 || Math.min(Math.abs(y0), Math.abs(y1)) > 89.999) continue;
+          const lon = (x0 + x1) / 2 * RAD, lat = (y0 + y1) / 2 * RAD;
+          const length = Math.hypot((x1 - x0) * Math.cos(lat), y1 - y0);
+          sum[0] += length * Math.cos(lat) * Math.cos(lon);
+          sum[1] += length * Math.cos(lat) * Math.sin(lon);
+          sum[2] += length * Math.sin(lat);
+        }
+      }
+    }
+    return {type:"FeatureCollection", features: Object.entries(sums).map(([name, [x, y, z]])=>({
+      type:"Feature", properties:{name},
+      geometry:{type:"Point", coordinates:[Math.atan2(y, x) / RAD, Math.atan2(z, Math.hypot(x, y)) / RAD]}}))};
+  }
+  async function showPlates(level){
+    const set = (id, on)=>{ if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); };
+    if (level === 0) { set("plates-line", false); set("plate-names", false); return; }
+    try {
+      if (!map.getSource("plates")) {
+        platesLoading ??= fetchPlates("PB2002_boundaries.json");
+        const data = await platesLoading;
+        if (!map.getSource("plates")) {
+          map.addSource("plates", {type:"geojson", data, attribution:"Plate boundaries: Bird (2003)"});
+          // Above the frames and area overlays; earthquakes and volcanoes are
+          // raised above it.
+          map.addLayer({id:"plates-line", type:"line", source:"plates",
+            paint:{"line-color":"#e05c2f", "line-opacity":0.9,
+                   "line-width":["case", ["==", ["get", "Type"], "subduction"], 2.2, 1.4]}});
+          const tip = new maplibregl.Popup({closeButton:false, closeOnClick:false, offset:6});
+          map.on("mousemove", "plates-line", e=>{
+            const p = e.features[0].properties;
+            tip.setLngLat(e.lngLat).setHTML(`<div class="pop-row">Plate boundary ${p.PlateA}-${p.PlateB}`+
+              `${p.Type ? ` &middot; ${p.Type}` : ""}</div>`).addTo(map);
+          });
+          map.on("mouseleave", "plates-line", ()=> tip.remove());
+        }
+      }
+      if (overlayState.plates === 0) return;   // switched off while loading
+      set("plates-line", true);
+      if (level === 2) {
+        if (!map.getSource("plate-names")) {
+          plateNamesLoading ??= fetchPlates("PB2002_plates.json").then(plateLabelPoints);
+          const names = await plateNamesLoading;
+          if (!map.getSource("plate-names")) {
+            map.addSource("plate-names", {type:"geojson", data: names});
+            map.addLayer({id:"plate-names", type:"symbol", source:"plate-names",
+              layout:{"text-field":["get", "name"], "text-font":["Open Sans Semibold"],
+                      "text-size":["interpolate", ["linear"], ["zoom"], 1, 10, 6, 15],
+                      "text-transform":"uppercase", "text-letter-spacing":0.12, "text-max-width":7},
+              paint:{"text-color":"#a63c17", "text-halo-color":"rgba(255,255,255,0.85)", "text-halo-width":1.4}});
+          }
+        }
+        if (overlayState.plates === 2) set("plate-names", true);
+      } else set("plate-names", false);
+    } catch (err) {
+      overlayState.plates = 0;
+      if (overlayButtons.plates) {
+        overlayButtons.plates.classList.remove("active");
+        overlayButtons.plates.title = `Tectonic plates - could not load (${err.message}); click to retry`;
+      }
+    }
+  }
+
   // ---------- volcanoes ----------
   // The Smithsonian GVP Holocene list ships in the page (its server sends no
   // CORS header); US alert levels come live from USGS, which allows any origin.
@@ -4626,7 +4749,8 @@ APP_JS = r"""
   }
   ["vo-since","vo-area","vo-color","vo-usgs"].forEach(id=> document.getElementById(id).addEventListener("change", voApply));
   document.getElementById("vo-single").addEventListener("input", voApply);
-  if (!HAS_VOLCANOES) overlayButtons.volcano && overlayButtons.volcano.closest(".maplibregl-ctrl").remove();
+  // Just the button: it shares its box with the plates and earthquakes.
+  if (!HAS_VOLCANOES && overlayButtons.volcano) overlayButtons.volcano.remove();
 
   function refreshSnowPanel(){
     if (!META.has_blackout) return;
