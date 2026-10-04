@@ -34,8 +34,8 @@ dates, and every frame is recounted over just that window. The numeric ramps fit
 the frames currently shown.
 
 **Frame Color / Opacity** has two tabs, the same as the map's colour panel.
-**Color by** lists the colourings grouped into counts, mode / coverage, planning
-and flags, each with a preview of its colours. **Style** holds fill and outline
+**Color by** lists the colourings grouped into counts, mode / coverage, planning,
+flags and quality (QA), each with a preview of its colours. **Style** holds fill and outline
 opacity and the colormap: pick one of 31, in folding groups (closed at first; each header names the
 current colormap) of perceptual (Viridis, Turbo,
 Batlow, ...), single hue (Blues, Greens, ...), multi hue (YlOrRd, YlGnBu, ...)
@@ -90,6 +90,71 @@ reads the flags with HTTP byte-range requests (an Earthdata login in
 `~/.netrc`) into `catalog/granule_flags.json.gz`; the weekly viewer build reads
 only the granules published since the last run.
 
+**QA metrics.** When the viewer is built with `--granule-qa`, the
+**Quality (QA)** group of **Color frames by** paints each frame by a metric from
+every product's `QA_STATS.h5`. For GUNW the metrics are:
+
+- the coherence median and mean;
+- the valid unwrapped share (pixels in a non-zero connected component), as a
+  percentage of the data area rather than of the whole grid;
+- the share of the largest connected component;
+- the number of connected components;
+- the ionosphere screen's mean, median and spread, and its mean uncertainty;
+- the pair's RFI likelihood, the larger of its two acquisitions'.
+
+For GSLC it is the RFI likelihood alone.
+
+A frame's value summarises the granules or pairs that pass the chips and the
+date range, the same way the counts do. The **Style** tab chooses the
+statistic: the **median**, the **worst** value (the 10th or 90th percentile,
+whichever direction is bad), or the **% bad** past a threshold you can edit.
+Frames with nothing read yet are grey.
+
+Means, medians and spreads are computed from the stored histograms. The QA
+software's own means read near zero for some granules whose histograms are
+fine.
+
+The RFI likelihood is documented as 0-1, but most granules report far larger
+values, up to about 1e31, so it is coloured on a log10 scale, and "bad" means
+above 1. The ionosphere mean carries a different arbitrary offset in each pair.
+Its spread compares better across pairs.
+
+In the plot window, **Show QA** adds one lane per metric under the timeline or
+pair plot. Values are coloured from dark (worse) to bright (better), and a red
+mark flags a value past its threshold. **Colour pairs** recolours the GUNW
+segments by one metric, so poor pairs stand out in the network. The tooltips,
+the frame popup's QA line and the CSV export carry the values.
+
+`scripts/collect_granule_qa.py` downloads the QA files into
+`catalog/granule_qa.json.gz`. The weekly build reads only new granules, and a
+granule withdrawn from the archive is cached as empty.
+
+**Browse and QA images.** Each row in the granule or interferogram list has a
+**browse** button, and so does each point in the plot (click it). The button
+opens a card with the product's public browse image: the unwrapped phase of a
+GUNW, the backscatter of a GSLC.
+
+**Browse images** in the frame popup lays out a strip of thumbnails for the
+granules or pairs that pass the filters. Each thumbnail's border is coloured by
+a QA metric.
+
+The wrapped phase, coherence, connected components and ionosphere screen are
+drawn only in each product's QA report, which needs an Earthdata login that a
+web page cannot send. `scripts/qa_browse_server.py` runs on your own machine
+(`127.0.0.1:8797`, with your login in `~/.netrc`). On request it downloads a
+report (about 400 kB), extracts its images and caches them. It also reads the
+grid corners that place any image on the map.
+
+While the helper runs, the card gains a tab for each layer, the strip can show
+any of them, and **on map** lays the image over its frame with an opacity
+slider. The first request for a pair takes a few seconds, and later ones come
+from the cache. Without the helper the card shows the public image and the
+command to start it.
+
+The published page reaches the helper from Chrome, Edge and Firefox; Chrome may
+first ask to allow access to devices on your local network. Safari and phones
+see the public images only.
+
 **Rollout regions.** NISAR has no rollout list of its own yet, so each NISAR
 frame is tagged with the DISP-S1 North America rollout options it overlaps:
 priorities `P0`, `P1`, `P2`, `P3a`, `P3b` and `P4`, from the frame-based rollout
@@ -113,8 +178,8 @@ bottom panel is open at a time.
 
 - The *palette* button is **Color frames by** on the map. The first click opens
   its panel. The **Color by** tab lists every colouring for the product shown
-  (GSLC or GUNW), grouped into counts, mode / coverage, planning and flags, each
-  with a preview of its colours; tap one to apply it. The **Style** tab holds
+  (GSLC or GUNW), grouped into counts, mode / coverage, planning, flags and quality (QA),
+  each with a preview of its colours; tap one to apply it. The **Style** tab holds
   fill opacity (with 0-100 presets), outline opacity (fill 0 with outlines gives
   an outline-only map), and the colormap, invert and range of a numeric
   colouring or the colour of each category. The second click (or the panel's

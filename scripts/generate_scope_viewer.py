@@ -1189,6 +1189,32 @@ APP_CSS = r"""
     background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;
     box-shadow:0 4px 16px rgb(0 0 0 / .3);}
   .overlay-panel[hidden]{display:none;}
+  #browse-card{position:absolute;left:10px;top:128px;z-index:5;width:360px;max-width:calc(100% - 20px);
+    max-height:calc(100% - 140px);overflow:auto;resize:both;background:var(--panel);border:1px solid var(--border);
+    border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
+  #browse-card[hidden]{display:none;}
+  #browse-tabs{flex-wrap:wrap;margin:6px 0 0;}
+  #browse-tabs button{padding:2px 7px;font-size:11px;}
+  #browse-tabs .bc-wait{color:var(--text-dim);font-size:10.5px;padding:3px 6px;}
+  .bc-sub{color:var(--text-dim);font-size:10.5px;line-height:1.35;word-break:break-all;}
+  .bc-img{position:relative;min-height:140px;margin:6px 0;border-radius:5px;display:flex;align-items:center;justify-content:center;
+    background:repeating-conic-gradient(var(--inset) 0 25%, var(--panel2) 0 50%) 0 0/14px 14px;}
+  .bc-img img{max-width:100%;max-height:360px;display:block;}
+  .bc-img img[hidden]{display:none;}
+  #browse-msg{position:absolute;left:6px;right:6px;bottom:6px;text-align:center;color:var(--text-dim);font-size:10.5px;}
+  .bc-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;}
+  .bc-ctl label{display:flex;align-items:center;gap:4px;cursor:pointer;}
+  .bc-ctl input[type=checkbox]{width:auto;margin:0;}
+  .bc-ctl input[type=range]{width:90px;}
+  .bc-ctl a{color:var(--accent);}
+  .bc-helper code{font-size:10px;user-select:all;}
+  .btn.tiny{padding:0 5px;font-size:10px;margin-left:6px;vertical-align:1px;}
+  .strip-ctl{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;color:var(--text-dim);}
+  .strip-ctl select{width:auto;margin:0;padding:1px 4px;font-size:11px;}
+  .strip{display:flex;gap:6px;overflow-x:auto;padding:6px 0 4px;}
+  .strip-th{flex:0 0 auto;width:86px;padding:2px;border:2px solid var(--border);border-radius:5px;background:var(--inset);
+    cursor:pointer;color:var(--text-dim);font:inherit;font-size:9.5px;line-height:1.2;}
+  .strip-th img{width:78px;height:78px;object-fit:contain;display:block;margin:0 auto 2px;}
   .overlay-head{display:flex;justify-content:space-between;align-items:center;font-weight:600;margin-bottom:4px;}
   .ov-row{display:flex;gap:7px;align-items:flex-start;padding:4px 2px;border-bottom:1px solid var(--hairline);cursor:pointer;}
   .ov-row:hover{background:var(--panel2);}
@@ -1275,6 +1301,8 @@ APP_CSS = r"""
     #click-ctrl{top:134px;left:10px;right:auto;padding:5px 7px;}
     .maplibregl-ctrl-bottom-right{margin-bottom:env(safe-area-inset-bottom);}
     .overlay-panel{left:8px;right:56px;width:auto;bottom:calc(8px + env(safe-area-inset-bottom));max-height:52vh;}
+    #browse-card{left:8px;right:8px;width:auto;max-width:none;top:auto;bottom:calc(8px + env(safe-area-inset-bottom));
+      max-height:62vh;resize:none;}
     #colorby-panel{width:auto;max-height:52vh;}
     #map-legend{left:8px;bottom:calc(34px + env(safe-area-inset-bottom));width:auto;max-width:calc(100vw - 72px);}
     .maplibregl-popup{max-width:92vw !important;}
@@ -1547,6 +1575,19 @@ BODY_HTML = r"""<body>
       <div class="overlay-head"><span>Rollout regions</span><button class="li-x" data-close="rollout" title="Close">&times;</button></div>
       <div class="pop-row" id="rollout-panel-note"></div>
       <div id="rollout-panel-list"></div>
+    </div>
+    <div id="browse-card" hidden>
+      <div class="overlay-head"><span id="browse-title">Browse</span><button class="li-x" id="browse-close" title="Close">&times;</button></div>
+      <div class="bc-sub" id="browse-sub"></div>
+      <div class="cb-tabs" id="browse-tabs" role="tablist"></div>
+      <div class="bc-img"><img id="browse-img" alt="" hidden><div id="browse-msg"></div></div>
+      <div class="bc-ctl">
+        <label title="Place this image on the map"><input type="checkbox" id="browse-map"> on map</label>
+        <input type="range" id="browse-opacity" min="10" max="100" value="85" title="Opacity on the map">
+        <a id="browse-full" target="_blank" rel="noopener">full size</a>
+        <a id="browse-report" target="_blank" rel="noopener" title="Needs your Earthdata login">QA report</a>
+      </div>
+      <div class="stat-line bc-helper" id="browse-helper"></div>
     </div>
     <div id="chart-modal" hidden>
       <div class="chart-card">
@@ -2710,6 +2751,310 @@ APP_JS = r"""
   }
   let showQa = false;
   let qaPairColor = "";
+
+  // ---------- browse and QA images ----------
+  // Every product's browse PNG is public and the browser may fetch it, so the
+  // card always has one image (a GUNW's unwrapped phase, a GSLC's backscatter).
+  // The wrapped phase, coherence, connected components and ionosphere screen
+  // are only drawn in the QA report, behind the Earthdata login; the local
+  // helper (scripts/qa_browse_server.py) fetches and extracts them on request,
+  // and reads the grid corners that place any of them on the map.
+  const DATA_HOST = "https://nisar.asf.earthdatacloud.nasa.gov";
+  const PRODUCT_COLLECTION = {GSLC:"NISAR_L2_GSLC_PROVISIONAL_V1", GUNW:"NISAR_L2_GUNW_PROVISIONAL_V1"};
+  const QA_HELPER_DEFAULT = "http://127.0.0.1:8797";
+  let qaHelper = QA_HELPER_DEFAULT;
+  try { qaHelper = localStorage.getItem("nisar-qa-helper") || QA_HELPER_DEFAULT; } catch (e) {}
+  function gidKind(gid){ return String(gid).split("_")[3]; }
+  function browseUrl(gid, suffix){ return `${DATA_HOST}/BROWSE/${PRODUCT_COLLECTION[gidKind(gid)]}/${gid}/${gid}${suffix}`; }
+  function productFileUrl(gid, suffix){ return `${DATA_HOST}/NISAR/${PRODUCT_COLLECTION[gidKind(gid)]}/${gid}/${gid}${suffix}`; }
+
+  // A failed check is retried after a while, so starting the helper later
+  // needs no reload.
+  let helperCheck = null, helperCheckedAt = 0;
+  function helperAlive(){
+    if (!helperCheck || (Date.now() - helperCheckedAt > 15000 && helperCheck.failed)) {
+      helperCheckedAt = Date.now();
+      const ctl = new AbortController();
+      const timer = setTimeout(()=>ctl.abort(), 1500);
+      const check = fetch(`${qaHelper}/health`, {signal: ctl.signal}).then(r=>r.ok).catch(()=>false)
+        .then(ok=>{ clearTimeout(timer); check.failed = !ok; return ok; });
+      helperCheck = check;
+    }
+    return helperCheck;
+  }
+  async function helperJson(path){
+    const r = await fetch(`${qaHelper}${path}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return j;
+  }
+  // Images are read with fetch and shown from blob URLs: an <img> pointing an
+  // https page at http://127.0.0.1 counts as mixed content.
+  const helperBlobs = new Map();
+  function helperImage(gid, layer, thumb){
+    const key = `${gid}/${layer}${thumb ? "?thumb=1" : ""}`;
+    if (!helperBlobs.has(key)) {
+      helperBlobs.set(key, fetch(`${qaHelper}/qa/${key}`).then(r=>{
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      }).then(b=>URL.createObjectURL(b)).catch(e=>{ helperBlobs.delete(key); throw e; }));
+    }
+    return helperBlobs.get(key);
+  }
+  // A GSLC browse is greyscale with black outside the swath; on the map that
+  // black would hide the frame underneath, so it is made transparent first.
+  const transparentBrowse = new Map();
+  function mapReadyUrl(gid, url){
+    if (gidKind(gid) !== "GSLC") return Promise.resolve(url);
+    if (!transparentBrowse.has(url)) transparentBrowse.set(url, new Promise((resolve, reject)=>{
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = ()=>{
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const px = ctx.getImageData(0, 0, c.width, c.height);
+        for (let i = 0; i < px.data.length; i += 4) {
+          if (px.data[i] === 0 && px.data[i+1] === 0 && px.data[i+2] === 0) px.data[i+3] = 0;
+        }
+        ctx.putImageData(px, 0, 0);
+        c.toBlob(b=> b ? resolve(URL.createObjectURL(b)) : reject(new Error("canvas")), "image/png");
+      };
+      img.onerror = ()=>reject(new Error("browse image did not load"));
+      img.src = url;
+    }));
+    return transparentBrowse.get(url);
+  }
+
+  let browse = null;   // {gid, layers, cur, corners, onMap}
+  function browseTitle(gid){
+    const parts = String(gid).split("_");
+    if (gidKind(gid) === "GUNW") {
+      const d = s=> `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+      return `GUNW ${d(parts[11])} &rarr; ${d(parts[13])} &middot; T${parts[5]} F${parts[7]}`;
+    }
+    return `GSLC ${parts[11].slice(0,4)}-${parts[11].slice(4,6)}-${parts[11].slice(6,8)} &middot; T${parts[5]} F${parts[7]}`;
+  }
+  function renderBrowseTabs(){
+    const tabs = browse.layers.map(l=>
+      `<button type="button" data-layer="${l.name}" class="${l.name === browse.cur ? "active" : ""}">${l.label}</button>`).join("");
+    document.getElementById("browse-tabs").innerHTML = tabs + (browse.loading ? `<span class="bc-wait">${browse.loading}</span>` : "");
+  }
+  function setHelperNote(html){ document.getElementById("browse-helper").innerHTML = html; }
+  function helperOffNote(){
+    return `Wrapped phase, coherence, connected components and ionosphere need the local QA helper `+
+      `(your Earthdata login in ~/.netrc): <code>python scripts/qa_browse_server.py</code>`;
+  }
+  function openBrowse(gid){
+    const kind = gidKind(gid);
+    if (!PRODUCT_COLLECTION[kind]) return;
+    const card = document.getElementById("browse-card");
+    // Above the plot window when opened from it; otherwise under the search
+    // results, which drop down over the same corner.
+    card.style.zIndex = document.getElementById("chart-modal").hidden ? "" : "25";
+    card.hidden = false;
+    browse = {gid, cur:"public", corners:null, onMap: document.getElementById("browse-map").checked,
+              layers:[{name:"public", label: kind === "GUNW" ? "Unwrapped (browse)" : "Backscatter (browse)",
+                       url: browseUrl(gid, "_LATLON.png"), place:"bbox"}]};
+    document.getElementById("browse-title").innerHTML = browseTitle(gid);
+    document.getElementById("browse-sub").textContent = gid;
+    document.getElementById("browse-report").href = productFileUrl(gid, "_QA_REPORT.pdf");
+    setHelperNote("");
+    browse.loading = "checking for the QA helper...";
+    renderBrowseTabs();
+    showBrowseLayer("public");
+    const mine = browse;
+    helperAlive().then(ok=>{
+      if (browse !== mine) return;
+      if (!ok) { mine.loading = ""; renderBrowseTabs(); setHelperNote(helperOffNote()); syncBrowseMapCtl(); return; }
+      helperJson(`/corners/${gid}.json`).then(c=>{
+        if (browse !== mine) return;
+        mine.corners = c;
+        syncBrowseMapCtl();
+        if (mine.onMap) placeBrowseOnMap(true);
+      }).catch(e=>{ if (browse === mine) setHelperNote(`Could not read the grid corners: ${e.message}`); });
+      if (kind !== "GUNW") { mine.loading = ""; renderBrowseTabs(); return; }
+      mine.loading = "fetching the QA report...";
+      renderBrowseTabs();
+      helperJson(`/qa/${gid}/index.json`).then(j=>{
+        if (browse !== mine) return;
+        mine.loading = j.layers.length ? "" : "the QA report has no images";
+        j.layers.forEach(l=> mine.layers.push({name:l.name, label:l.label, place:"quad"}));
+        renderBrowseTabs();
+      }).catch(e=>{
+        if (browse !== mine) return;
+        mine.loading = "";
+        renderBrowseTabs();
+        setHelperNote(`The QA helper could not fetch this report: ${e.message}`);
+      });
+    });
+    syncBrowseMapCtl();
+  }
+  async function layerUrl(layer){
+    return layer.url || helperImage(browse.gid, layer.name, false);
+  }
+  async function showBrowseLayer(name){
+    const layer = browse.layers.find(l=>l.name === name);
+    if (!layer) return;
+    browse.cur = name;
+    renderBrowseTabs();
+    const img = document.getElementById("browse-img"), msg = document.getElementById("browse-msg");
+    const mine = browse;
+    img.hidden = true;
+    msg.textContent = "loading...";
+    try {
+      const url = await layerUrl(layer);
+      if (browse !== mine || mine.cur !== name) return;
+      img.onload = ()=>{ msg.textContent = ""; img.hidden = false; };
+      img.onerror = ()=>{ msg.textContent = "image not available"; };
+      img.src = url;
+      document.getElementById("browse-full").href = url;
+      if (mine.onMap) placeBrowseOnMap(false);
+    } catch (e) {
+      if (browse === mine) msg.textContent = `could not load: ${e.message}`;
+    }
+  }
+  function browseCoords(layer){
+    const c = browse && browse.corners;
+    if (!c) return null;
+    if (layer.place === "quad") return c.quad;
+    const [w, s, e, n] = c.bbox;
+    return [[w, n], [e, n], [e, s], [w, s]];
+  }
+  function syncBrowseMapCtl(){
+    const box = document.getElementById("browse-map");
+    const ready = Boolean(browse && browse.corners);
+    box.disabled = !ready;
+    box.parentElement.title = ready ? "Place this image on the map"
+      : "Placing an image needs its corners, which the local QA helper reads";
+  }
+  function clearBrowseMap(){
+    if (map.getLayer("browse-img")) map.removeLayer("browse-img");
+    if (map.getSource("browse-img")) map.removeSource("browse-img");
+  }
+  async function placeBrowseOnMap(fit){
+    const layer = browse.layers.find(l=>l.name === browse.cur);
+    const coords = browseCoords(layer);
+    if (!coords) return;
+    const mine = browse;
+    const url = await mapReadyUrl(mine.gid, await layerUrl(layer));
+    if (browse !== mine || !mine.onMap) return;
+    const opacity = Number(document.getElementById("browse-opacity").value) / 100;
+    const src = map.getSource("browse-img");
+    if (src) src.updateImage({url, coordinates: coords});
+    else {
+      map.addSource("browse-img", {type:"image", url, coordinates: coords});
+      // Under the frame outlines, so the frame it belongs to stays visible.
+      map.addLayer({id:"browse-img", type:"raster", source:"browse-img",
+                    paint:{"raster-opacity": opacity, "raster-fade-duration": 0}}, "frames-outline");
+    }
+    if (fit) {
+      const lons = coords.map(c=>c[0]), lats = coords.map(c=>c[1]);
+      map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+                    {padding: 80, maxZoom: 9, duration: 600});
+    }
+  }
+  document.getElementById("browse-tabs").addEventListener("click", e=>{
+    const b = e.target.closest("[data-layer]");
+    if (b && browse) showBrowseLayer(b.dataset.layer);
+  });
+  document.getElementById("browse-map").addEventListener("change", e=>{
+    if (!browse) return;
+    browse.onMap = e.target.checked;
+    if (browse.onMap) {
+      // The plot window would cover the map the image is going onto.
+      hideModeTimeline();
+      document.getElementById("browse-card").style.zIndex = "";
+      placeBrowseOnMap(true);
+    } else clearBrowseMap();
+  });
+  document.getElementById("browse-opacity").addEventListener("input", e=>{
+    if (map.getLayer("browse-img")) map.setPaintProperty("browse-img", "raster-opacity", Number(e.target.value) / 100);
+  });
+  document.getElementById("browse-close").addEventListener("click", ()=>{
+    document.getElementById("browse-card").hidden = true;
+    clearBrowseMap();
+    browse = null;
+  });
+  // The browse buttons live in popups that are rebuilt on every open.
+  document.addEventListener("click", e=>{
+    const b = e.target.closest ? e.target.closest("[data-browse]") : null;
+    if (b) { e.stopPropagation(); openBrowse(b.dataset.browse); }
+  });
+
+  // ---------- browse strip in the frame popup ----------
+  // One thumbnail per granule / pair left by the filters, newest last; the
+  // public browse thumbnails need nothing, the QA layers the helper. Helper
+  // thumbnails load as they scroll into view, a few at a time.
+  const STRIP_LAYERS = [["public","browse"],["wrapped","wrapped phase"],["coherence","coherence"],
+                        ["cc","conn. comp."],["iono","ionosphere"]];
+  let stripLayer = "public";
+  let stripQueue = [], stripActive = 0;
+  function pumpStrip(){
+    while (stripActive < 3 && stripQueue.length) {
+      const img = stripQueue.shift();
+      if (!img.isConnected) continue;
+      stripActive++;
+      helperImage(img.dataset.gid, img.dataset.layer, true)
+        .then(url=>{ img.src = url; })
+        .catch(()=>{ img.alt = "n/a"; })
+        .finally(()=>{ stripActive--; pumpStrip(); });
+    }
+  }
+  const stripObserver = "IntersectionObserver" in window ? new IntersectionObserver(entries=>{
+    entries.forEach(en=>{
+      if (!en.isIntersecting) return;
+      stripObserver.unobserve(en.target);
+      stripQueue.push(en.target);
+    });
+    pumpStrip();
+  }) : null;
+  function renderStrip(panel, p, gunw){
+    const items = qaEntries(p, gunw).slice().sort((a,b)=> gunw ? (a.ref.localeCompare(b.ref) || a.sec.localeCompare(b.sec)) : a.date.localeCompare(b.date));
+    const k = gunw ? (qaPairColor || "cm") : "rl";
+    const color = META.has_qa ? qaScale(k, items.map(g=>qaValue(g, k))) : null;
+    const helperLayers = gunw ? STRIP_LAYERS : STRIP_LAYERS.slice(0, 1);
+    panel.innerHTML =
+      `<div class="strip-ctl">${items.length} ${gunw ? "pairs" : "acquisitions"} (filters apply) &middot; show `+
+      `<select data-role="strip-layer">${helperLayers.map(([v, t])=>`<option value="${v}"${v === stripLayer ? " selected" : ""}>${t}</option>`).join("")}</select>`+
+      (color ? `<span>border: ${QA_FIELDS[k].lane}</span>` : "")+`</div>`+
+      `<div class="strip">${items.map(g=>{
+        const v = META.has_qa ? qaValue(g, k) : NaN;
+        const border = color && Number.isFinite(v) ? ` style="border-color:${color(v)}"` : "";
+        const label = gunw ? `${g.ref.slice(2)}<br>${g.sec.slice(2)}` : `${g.date}<br>${g.mode} ${g.pol}`;
+        return `<button type="button" class="strip-th" data-browse="${g.gid}"${border} title="${Number.isFinite(v) ? `${QA_FIELDS[k].lane} ${fmtQa(k, v)}` : g.gid}">`+
+               `<img alt="" data-gid="${g.gid}">${label}</button>`;
+      }).join("") || `<span class="tdim">Nothing left by the filters.</span>`}</div>`+
+      `<div class="stat-line" data-role="strip-note"></div>`;
+    const layer = stripLayer === "public" || !gunw ? "public" : stripLayer;
+    const imgs = Array.from(panel.querySelectorAll(".strip img"));
+    if (layer === "public") {
+      imgs.forEach(img=>{ img.loading = "lazy"; img.src = browseUrl(img.dataset.gid, "_LATLON_thumbnail.png"); });
+    } else {
+      helperAlive().then(ok=>{
+        if (!ok) { panel.querySelector('[data-role="strip-note"]').innerHTML = helperOffNote(); return; }
+        imgs.forEach(img=>{
+          img.dataset.layer = layer;
+          if (stripObserver) stripObserver.observe(img); else stripQueue.push(img);
+        });
+        pumpStrip();
+      });
+    }
+    panel.querySelector('[data-role="strip-layer"]').addEventListener("change", e=>{
+      stripLayer = e.target.value;
+      renderStrip(panel, p, gunw);
+    });
+  }
+  function wireStrip(p, gunw){
+    const btn = document.getElementById("pop-strip"), panel = document.getElementById("pop-strip-panel");
+    if (!btn || !panel) return;
+    btn.addEventListener("click", ()=>{
+      panel.hidden = !panel.hidden;
+      btn.textContent = panel.hidden ? "Browse images" : "Hide images";
+      if (!panel.hidden) renderStrip(panel, p, gunw);
+    });
+  }
   let showFlags = false;
   let redrawChart = null;
 
@@ -3638,8 +3983,10 @@ APP_JS = r"""
         <button class="btn small" id="pop-granules"${granules.length ? "" : " disabled"}>Show granules (${granules.length})</button>
         <button class="btn small" id="pop-csv"${granules.length ? "" : " disabled"}>Export CSV</button>
         <button class="btn small" id="pop-plot"${granules.length ? "" : " disabled"}>Show plot</button>
+        <button class="btn small" id="pop-strip"${granules.length ? "" : " disabled"}>Browse images</button>
         ${nDup ? `<button class="btn small" id="pop-dups">Show duplicates (${nDup})</button>` : ""}
       </div>
+      <div id="pop-strip-panel" hidden></div>
       <div id="pop-granule-panel" hidden>${dirChips}<div class="granule-list" id="pop-granule-list">${rows}</div></div>
       ${nDup ? `<div id="pop-dup-panel" hidden><div class="granule-list">${duplicateRowsHtml(dupGroups)}</div></div>` : ""}`;
   }
@@ -3647,7 +3994,8 @@ APP_JS = r"""
   function granuleRowsHtml(granules){
     return granules.map(g=>
       `<div class="granule-row"><span class="gdate">${g.date}</span> `+
-      `<span class="gmode">${g.mode}_${g.cov}</span> ${g.pol} ${g.dir} c${g.cycle}${g.crid ? ` ${g.crid}` : ""}<br>${g.gid}</div>`
+      `<span class="gmode">${g.mode}_${g.cov}</span> ${g.pol} ${g.dir} c${g.cycle}${g.crid ? ` ${g.crid}` : ""}`+
+      `<button class="btn tiny" data-browse="${g.gid}" title="Show this granule's browse image">browse</button><br>${g.gid}</div>`
     ).join("");
   }
 
@@ -3690,6 +4038,7 @@ APP_JS = r"""
       downloadBlob(granuleCsv(p, granules), `nisar_granules_${p.id}.csv`, "text/csv"));
     const plotBtn = document.getElementById("pop-plot");
     if (plotBtn) plotBtn.addEventListener("click", ()=> showModeTimeline(p, granules));
+    wireStrip(p, false);
   }
 
   // ---------- GUNW view ----------
@@ -3713,7 +4062,8 @@ APP_JS = r"""
   function gunwRowsHtml(ifgs){
     return ifgs.map(g=>
       `<div class="granule-row"><span class="gdate">${g.ref} &rarr; ${g.sec}</span> `+
-      `<span class="gmode">${g.dt} d</span> ${g.mode}_${g.cov} ${g.pol}<br>${g.gid}</div>`
+      `<span class="gmode">${g.dt} d</span> ${g.mode}_${g.cov} ${g.pol}`+
+      `<button class="btn tiny" data-browse="${g.gid}" title="Show this pair's browse and QA images">browse</button><br>${g.gid}</div>`
     ).join("");
   }
 
@@ -3732,7 +4082,9 @@ APP_JS = r"""
         <button class="btn small" id="pop-ifgs"${off}>Show interferograms (${ifgs.length})</button>
         <button class="btn small" id="pop-csv"${off}>Export CSV</button>
         <button class="btn small" id="pop-plot"${off}>Show plot</button>
+        <button class="btn small" id="pop-strip"${off}>Browse images</button>
       </div>
+      <div id="pop-strip-panel" hidden></div>
       <div id="pop-ifg-panel" hidden><div class="granule-list">${gunwRowsHtml(ifgs)}</div></div>`;
   }
 
@@ -3764,6 +4116,7 @@ APP_JS = r"""
       downloadBlob(gunwCsv(p, ifgs), `nisar_gunw_${p.id}.csv`, "text/csv"));
     const plotBtn = document.getElementById("pop-plot");
     if (plotBtn) plotBtn.addEventListener("click", ()=> showGunwPlot(p, ifgs));
+    wireStrip(p, true);
   }
 
   // A frame's interferogram network: acquisition dates are nodes, pairs are
@@ -4162,6 +4515,13 @@ APP_JS = r"""
     chartTip.style.top = `${e.clientY - card.top + 14}px`;
   });
   document.getElementById("chart-body").addEventListener("mouseleave", ()=>{ chartTip.hidden = true; });
+  document.getElementById("chart-body").addEventListener("click", (e)=>{
+    const dot = e.target.closest ? e.target.closest(".chart-dot[data-i], .chart-ifg[data-i]") : null;
+    if (!dot) return;
+    const pt = chartPoints[Number(dot.dataset.i)];
+    const g = pt.ifg ? pt.group[0] : (pt.group ? pt.group[0] : pt.g);
+    if (g && g.gid) openBrowse(g.gid);
+  });
 
   map.on("load", ()=>{
     map.addSource("frames", { type:"geojson", data: FRAME_DATA });

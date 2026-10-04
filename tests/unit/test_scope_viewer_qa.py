@@ -129,3 +129,38 @@ def test_attach_granule_qa_skips_withdrawn_granules() -> None:
     assert n == 1
     assert "qa" not in props["granules"][0]
     assert props["gunw_ifgs"][0]["qa"] == {"cm": 0.4, "n": 1}
+
+
+def _qa_report(path: Path) -> None:
+    # A page laid out like the QA report's wrapped-group page: its title, two
+    # rasters drawn with imshow (which matplotlib stores bottom row first) and a
+    # colourbar too small to be a layer.
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # Dark in the north, bright in the south; enough levels that the raster is
+    # stored as 8-bit, like the QA report's.
+    phase = np.tile(np.linspace(0.0, 1.0, 120)[:, None], (1, 130))
+    fig, axes = plt.subplots(1, 2)
+    fig.suptitle("Wrapped Phase Image Group")
+    im = axes[0].imshow(phase, cmap="gray", interpolation="none")
+    axes[1].imshow(phase.T, cmap="gray", interpolation="none")
+    fig.colorbar(im, ax=axes[1])
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def test_extract_layers_keeps_the_rasters_north_up(tmp_path: Path) -> None:
+    pytest.importorskip("pypdf")
+    pdf = tmp_path / "report.pdf"
+    _qa_report(pdf)
+
+    layers = _load("qa_browse_server").extract_layers(pdf.read_bytes())
+
+    assert sorted(layers) == ["coherence_wrapped", "wrapped"]
+    wrapped = layers["wrapped"].convert("L")
+    w, h = wrapped.size
+    assert (w, h) == (130, 120)
+    assert wrapped.getpixel((w // 2, 2)) < 50
+    assert wrapped.getpixel((w // 2, h - 3)) > 200
