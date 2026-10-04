@@ -841,6 +841,11 @@ next to the key. The first click opens its choices, and a second click (or
 </tr>
 </tbody>
 </table>
+<p>Two boxes in the same panel also collect what the caches miss: <strong>granule
+flags</strong> (read from each product's metadata, about 5 granules a second) and <strong>QA
+metrics</strong> (each <code>QA_STATS.h5</code>, about 20 a second). Both are written to the
+helper's cache, not the repository's, and need the Earthdata login in
+<code>~/.netrc</code>.</p>
 <p>The helper searches CMR for every GSLC and GUNW granule in that scope. It
 builds the page with <code>scripts/build_local_view.py</code> and opens it; a box in the
 lower-left corner shows each step until it does. Frames keep the <code>frame_idx</code>
@@ -930,6 +935,15 @@ Program each time the layer first opens.</p>
 <p>Clicking a volcano gives its type, country, last eruption, elevation and
 evidence, any USGS alert with its notice, and links to its GVP page and its
 USGS observatory page.</p>
+<p>The plates, earthquake and volcano buttons share one box above the frame
+colouring (<em>palette</em>) button, set apart from the frame tools below it.</p>
+<p><strong>Tectonic plates.</strong> The <em>plates</em> button draws the plate boundaries of Bird
+(2003), PB2002, fetched from
+<a href="https://github.com/fraxen/tectonicplates">fraxen/tectonicplates</a> on first use.
+Subduction zones are drawn a little thicker, and hovering a boundary names its
+two plates. A second click adds the plate names, and a third hides them. The
+button works as in the geepers UNR grid viewer. The boundaries sit above the
+frames and below earthquakes and volcanoes.</p>
 <p><strong>CRID.</strong> The <strong>Mode / Polarization / CRID</strong> section also lists the composite
 release IDs (<code>P05023</code>, ...) read from the granule names. Selecting some narrows
 the map to frames with granules from those releases and recounts the colourings
