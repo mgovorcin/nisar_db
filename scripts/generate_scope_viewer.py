@@ -1066,14 +1066,15 @@ APP_CSS = r"""
   #product-ctrl button{background:none;border:none;color:var(--text);padding:3px 10px;border-radius:4px;cursor:pointer;font:inherit;}
   #product-ctrl button.active{background:var(--accent);color:var(--bg);font-weight:600;}
   #map.has-product #pass-ctrl{top:48px;}
-  #map.has-product #search{top:86px;}
+  /* Search beside the GSLC / GUNW switch (or, without it, beside the pass switch). */
+  #map.has-product #search{top:10px;left:138px;}
   #pass-ctrl{position:absolute;top:10px;left:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #pass-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
   #click-ctrl{position:absolute;top:48px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;}
   #click-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
-  #search{position:absolute;top:48px;left:10px;z-index:6;width:268px;}
+  #search{position:absolute;top:10px;left:186px;z-index:6;width:268px;}
   #search input{width:100%;box-sizing:border-box;background:var(--scrim);color:var(--text);border:1px solid var(--border);
     border-radius:6px;padding:6px 9px;font:inherit;font-size:11.5px;}
   #search input:focus{outline:2px solid var(--accent);outline-offset:-1px;}
@@ -1087,6 +1088,9 @@ APP_CSS = r"""
   #search-results .msg{padding:6px 9px;color:var(--text-dim);font-size:11px;}
   #top-hint{position:absolute;bottom:24px;left:10px;background:var(--scrim);color:var(--text-dim);
     font-size:11.5px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);pointer-events:none;z-index:5;}
+  /* MapLibre's top-left controls (zoom, compass) sit under the pass switch. */
+  .maplibregl-ctrl-top-left{top:36px;}
+  #map.has-product .maplibregl-ctrl-top-left{top:74px;}
   #basemap-ctrl{position:absolute;top:10px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #basemap-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
@@ -1226,7 +1230,7 @@ APP_CSS = r"""
   .eq-color input[hidden]{display:none;}
   .eq-legend{display:flex;flex-wrap:wrap;gap:3px 9px;margin-top:6px;font-size:10.5px;color:var(--text-dim);}
   .eq-legend i{display:inline-block;border-radius:50%;margin-right:3px;vertical-align:-1px;border:1px solid #fff;}
-  #browse-card{position:absolute;left:10px;top:128px;z-index:5;width:360px;max-width:calc(100% - 20px);
+  #browse-card{position:absolute;left:52px;top:84px;z-index:5;width:360px;max-width:calc(100% - 20px);
     max-height:calc(100% - 140px);overflow:auto;resize:both;background:var(--panel);border:1px solid var(--border);
     border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
   #browse-card[hidden]{display:none;}
@@ -1377,6 +1381,7 @@ APP_CSS = r"""
     #basemap-ctrl{top:96px;left:10px;right:auto;flex-wrap:wrap;gap:6px;padding:5px 7px;font-size:11px;}
     #top-hint,.maplibregl-ctrl-zoom-in,.maplibregl-ctrl-zoom-out{display:none !important;}
     #click-ctrl{top:134px;left:10px;right:auto;padding:5px 7px;}
+    .maplibregl-ctrl-top-left,#map.has-product .maplibregl-ctrl-top-left{top:162px;}
     .maplibregl-ctrl-bottom-right{margin-bottom:env(safe-area-inset-bottom);}
     .overlay-panel{left:8px;right:56px;width:auto;bottom:calc(8px + env(safe-area-inset-bottom));max-height:52vh;}
     #browse-card{left:8px;right:8px;width:auto;max-width:none;top:auto;bottom:calc(8px + env(safe-area-inset-bottom));
@@ -3902,7 +3907,8 @@ APP_JS = r"""
     zoom: META.view_scope === "globe" ? 1 : 1.4,
     attributionControl: true
   });
-  map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+  // Zoom and compass top left, under the All / Asc / Desc switch.
+  map.addControl(new maplibregl.NavigationControl(), "top-left");
 
   // Frame summaries on hover are opt-in; the switch sits above the globe toggle.
   let hoverEnabled = false;
