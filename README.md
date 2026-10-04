@@ -15,13 +15,19 @@
 [pypi-badge]:      https://img.shields.io/pypi/v/nisar-db
 [pypi-platforms]:  https://img.shields.io/pypi/pyversions/nisar-db
 [pypi-link]:       https://pypi.org/project/nisar-db/
-[conda-badge]:     https://img.shields.io/conda/vn/opera-adt/nisar_db
-[conda-link]:      https://anaconda.org/opera-adt/nisar_db
+[conda-badge]:     https://img.shields.io/conda/vn/conda-forge/nisar_db
+[conda-link]:      https://anaconda.org/conda-forge/nisar_db
 [license-badge]:   https://img.shields.io/badge/license-BSD--3--Clause%20OR%20Apache--2.0-blue
 [license-link]:    https://github.com/opera-adt/nisar_db/blob/main/LICENSE
 <!-- prettier-ignore-end -->
 
 Frame database generation for OPERA products from NISAR.
+
+[![The OPERA NISAR-DB frame viewer: NISAR frames over North America coloured by GSLC acquisitions](https://raw.githubusercontent.com/opera-adt/nisar_db/main/docs/assets/viewer.png)](https://opera-adt.github.io/nisar_db/frame-viewer.html)
+
+**[Open the interactive frame viewer](https://opera-adt.github.io/nisar_db/frame-viewer.html)**: every
+NISAR frame over North America with its GSLC and GUNW granules, consistent mode,
+blackout dates, granule flags and QA metrics, rebuilt weekly from CMR.
 
 ## Documentation
 
