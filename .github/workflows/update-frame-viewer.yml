@@ -147,20 +147,29 @@ jobs:
             --viewer-html "${VIEWER_HTML}" \
             --output catalog/granule_flags.json.gz
 
-      - name: Render the viewer HTML with the flags
+      # QA metrics (coherence, connected components, ionosphere, RFI) come from
+      # each product's small QA_STATS.h5, cached the same way as the flags.
+      - name: Collect per-granule QA metrics
+        run: |
+          python scripts/collect_granule_qa.py \
+            --viewer-html "${VIEWER_HTML}" \
+            --output catalog/granule_qa.json.gz
+
+      - name: Render the viewer HTML with the flags and QA metrics
         run: |
           python scripts/generate_scope_viewer.py $RENDER_ARGS \
-            --granule-flags catalog/granule_flags.json.gz
+            --granule-flags catalog/granule_flags.json.gz \
+            --granule-qa catalog/granule_qa.json.gz
 
-      - name: Commit the flag cache
+      - name: Commit the flag and QA caches
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add catalog/granule_flags.json.gz
+          git add catalog/granule_flags.json.gz catalog/granule_qa.json.gz
           if git diff --cached --quiet; then
-            echo "Flag cache unchanged"
+            echo "Flag and QA caches unchanged"
           else
-            git commit -m "Update granule flags [skip ci]"
+            git commit -m "Update granule flags and QA metrics [skip ci]"
             # The daily catalog Action also pushes to main.
             git pull --rebase --autostash origin main
             git push origin HEAD:main

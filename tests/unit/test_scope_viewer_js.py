@@ -32,6 +32,8 @@ let chartPoints = [];
 let modeKeyOrder = null;
 let archiveSpan = null;
 let showFlags = false;
+let showQa = false;
+let qaPairColor = "";
 const META = {};
 // The plots size themselves to the chart card on the page; with no page here
 // they get the card's default size.
@@ -251,7 +253,7 @@ def test_gunw_plot_draws_one_segment_per_pair_over_blackouts() -> None:
 
 def test_gunw_csv_has_one_row_per_granule() -> None:
     csv = run_js(
-        ["toCsv", "gunwCsv"],
+        ["toCsv", "qaValue", "qaCsvCols", "gunwCsv"],
         f"const IFGS = {json.dumps(IFGS)};"
         " return gunwCsv({frame_idx: 7, track: 1, frame: 4,"
         " passDirection: 'Ascending'}, IFGS);",
@@ -550,3 +552,69 @@ def test_crid_is_read_from_the_granule_name_and_filters_counts() -> None:
         " selectedGslcStats(rows, none, none, '', '', none).acq];",
     )
     assert result == ["P05023", "P05024", "", 1, 2]
+
+
+# ``run_js`` wraps the body in a function, so the constants the extracted
+# functions read are set on the global object.
+QA_PRELUDE = (
+    "globalThis.QA_FIELDS = {cm: {dir: -1, thr: 0.3}, n: {dir: 1, thr: 1},"
+    " im: {dir: 0, thr: 20}, rl: {dir: 1, thr: 0.5}};"
+    " globalThis.QA_GUNW = ['cm', 'n', 'rl'];"
+)
+
+
+def test_gunw_csv_adds_the_qa_columns() -> None:
+    ifgs = [dict(IFGS[0], qa={"cm": 0.43, "n": 2}, rl=0.1), IFGS[1]]
+    csv = run_js(
+        ["toCsv", "qaValue", "qaCsvCols", "gunwCsv"],
+        QA_PRELUDE + f" META.has_qa = true; const IFGS = {json.dumps(ifgs)};"
+        " return gunwCsv({frame_idx: 7, track: 1, frame: 4,"
+        " passDirection: 'Ascending'}, IFGS);",
+    )
+    lines = csv.strip().splitlines()
+    assert lines[0].endswith('"granule_id","qa_cm","qa_n","qa_rl"')
+    assert lines[1].split(",")[-3:] == ['"0.43"', '"2"', '"0.1"']
+    # A pair whose QA was not read leaves its cells empty.
+    assert lines[2].split(",")[-3:] == ['""', '""', '""']
+
+
+def test_qa_statistic_follows_the_bad_direction() -> None:
+    out = run_js(
+        ["quantile", "qaIsBad", "qaAggregate"],
+        QA_PRELUDE + " const coh = [0.1, 0.2, 0.5, 0.6, 0.9];"
+        " const iono = [-30, -5, 2, 25];"
+        " return [qaAggregate('cm', coh, 'median'), qaAggregate('cm', coh, 'worst'),"
+        " qaAggregate('cm', coh, 'bad', 0.3), qaAggregate('n', [1, 1, 2, 4], 'worst'),"
+        " qaAggregate('im', iono, 'bad', 20), qaAggregate('cm', [], 'median')];",
+    )
+    median, worst, bad, worst_n, iono_bad, empty = out
+    assert median == 0.5
+    # Low coherence is bad, so its worst is the 10th percentile ...
+    assert abs(worst - 0.14) < 1e-9
+    assert bad == 40
+    # ... while more connected components is worse, so theirs is the 90th.
+    assert abs(worst_n - 3.4) < 1e-9
+    # The ionosphere mean is judged by its size, either sign.
+    assert iono_bad == 50
+    assert empty is None
+
+
+def test_pair_rfi_is_the_worse_of_its_two_acquisitions() -> None:
+    props = {
+        "granules": [
+            {"date": "2025-11-01", "qa": {"rl": 0.2}},
+            {"date": "2025-11-13", "qa": {"rl": 0.7}},
+            {"date": "2025-11-13", "qa": {"rl": 0.4}},
+        ],
+        "gunw_ifgs": [
+            {"ref": "2025-11-01", "sec": "2025-11-13"},
+            {"ref": "2025-11-01", "sec": "2025-11-25"},
+            {"ref": "2025-10-20", "sec": "2025-11-25"},
+        ],
+    }
+    out = run_js(
+        ["asArray", "attachPairRfi"],
+        f"const p = {json.dumps(props)}; attachPairRfi(p);"
+        " return p.gunw_ifgs.map(g=>g.rl ?? null);",
+    )
+    assert out == [0.7, 0.2, None]
