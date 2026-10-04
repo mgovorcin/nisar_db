@@ -104,14 +104,18 @@ jobs:
             --output opera-nisar-disp-consistent-gslc-${DATE}.json
 
       # Blackout windows are climatological and reference dates follow them, so
-      # neither is rebuilt here: the latest release's copies drive the viewer's
-      # blackout coloring and reference-reset details when they exist.
-      - name: Fetch blackout / reference dates from the latest release
+      # neither is rebuilt here. The blackout dates kept in the repo (derived
+      # from scripts/snow-analysis) drive the viewer's blackout coloring; the
+      # latest release's copy stands in only when the repo has none. Reference
+      # dates come from the latest release when it has them.
+      - name: Fetch blackout / reference dates
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           EXTRA=""
-          if gh release download --pattern 'opera-nisar-disp-blackout-dates-*.json' \
+          if [ -f catalog/opera-nisar-disp-blackout-dates.json ]; then
+            EXTRA="$EXTRA --blackout-json catalog/opera-nisar-disp-blackout-dates.json"
+          elif gh release download --pattern 'opera-nisar-disp-blackout-dates-*.json' \
                --dir release-assets 2>/dev/null; then
             BLACKOUT=$(ls release-assets/opera-nisar-disp-blackout-dates-*.json | head -n1)
             EXTRA="$EXTRA --blackout-json $BLACKOUT"

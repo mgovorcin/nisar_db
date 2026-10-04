@@ -14,8 +14,12 @@ the embedded copy below is served as a static asset with these docs.
     workflow re-queries CMR for the GSLC archive each Monday at 06:00 UTC,
     rebuilds the consistent-mode database from it, re-renders this page, and
     republishes the site. The catalog behind a given run is attached to it as a
-    workflow artifact. Blackout and reference dates come from the latest
-    release, since those are climatological rather than weekly.
+    workflow artifact. Blackout and reference dates are climatological rather
+    than weekly, so they are not rebuilt: the blackout dates come from
+    [`catalog/opera-nisar-disp-blackout-dates.json`](https://github.com/opera-adt/nisar_db/blob/main/catalog/opera-nisar-disp-blackout-dates.json),
+    derived from the snow analysis in `scripts/snow-analysis/` with
+    `nisar-db create-blackout-dates`, and the reference dates from the latest
+    release.
 
     The sidebar header carries the **CMR queried** timestamp of the catalog the
     page was built from, so a scheduled run and a manual `workflow_dispatch`
