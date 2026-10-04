@@ -40,6 +40,7 @@ def _trackframe(tmp_path: Path) -> Path:
             "isCalVal": [False] * 3,
             "isSNWG": [False] * 3,
             "isDNC": [False] * 3,
+            "hasLand": [True, False, True],
         },
         geometry=[
             box(-122.5, 36.0, -121.5, 37.0),
@@ -66,6 +67,11 @@ def test_select_frames_keeps_the_trackframe_index(tmp_path: Path) -> None:
     assert list(boxed["frame_idx"]) == [0]
     with pytest.raises(ValueError):
         builder.select_frames(gpkg, "bbox")
+    # Land only drops the frame with no land, keeping the others' numbers.
+    assert list(builder.select_frames(gpkg, "globe", land_only=True)["frame_idx"]) == [
+        0,
+        2,
+    ]
 
 
 def test_gunw_rows_parse_the_granule_names() -> None:
@@ -91,30 +97,59 @@ def test_build_requests_are_checked(tmp_path: Path) -> None:
     assert builds.page("../secrets") is None
 
 
-def test_merged_cache_collects_only_the_missing_granules(tmp_path: Path) -> None:
+def test_merged_cache_prefers_the_local_cache(tmp_path: Path) -> None:
     import gzip
     import json
 
     builder = _load("build_local_view")
     repo = tmp_path / "repo.json.gz"
-    with gzip.open(repo, "wt") as fh:
-        json.dump({"A": {"r": 1}}, fh)
     local = tmp_path / "local.json.gz"
-    asked: list[list[str]] = []
+    for path, value in (
+        (repo, {"A": {"r": 1}, "B": {"r": 1}}),
+        (local, {"B": {"r": 0}}),
+    ):
+        with gzip.open(path, "wt") as fh:
+            json.dump(value, fh)
 
-    def collector(ids, output, _workers, **_kwargs):
-        asked.append(list(ids))
-        with gzip.open(output, "wt") as fh:
-            json.dump({g: {"r": 0} for g in ids}, fh)
+    assert builder.merged_cache(repo, local) == {"A": {"r": 1}, "B": {"r": 0}}
+    assert builder.merged_cache(repo, tmp_path / "missing.json.gz") == {
+        "A": {"r": 1},
+        "B": {"r": 1},
+    }
 
-    merged = builder.merged_cache(
-        repo, local, ["A", "B", "B", "C"], collector, "flags", progress=lambda _: None
-    )
 
-    assert asked == [["B", "C"]]
-    assert merged == {"A": {"r": 1}, "B": {"r": 0}, "C": {"r": 0}}
-    # Without a collector the caches are only read.
-    assert builder.merged_cache(repo, local, ["Z"]) == merged
+def test_catalog_flags_come_from_the_cmr_record() -> None:
+    attrs = [
+        {"Name": "JOINT_OBSERVATION", "Values": ["TRUE"]},
+        {"Name": "FULL_FRAME", "Values": ["FALSE"]},
+        {"Name": "ORBIT_TYPE", "Values": ["MOE"]},
+    ]
+    product = SimpleNamespace(name=GUNW, metadata={"AdditionalAttributes": attrs})
+    bare = SimpleNamespace(name="other", metadata={})
+
+    flags = _load("build_local_view").catalog_flags([product, bare])
+
+    assert flags == {GUNW: {"j": 1, "f": 0, "o": "MOE"}}
+
+
+def test_cached_flags_win_over_the_catalog() -> None:
+    builder = _load("build_local_view")
+    read = GUNW.replace("_001", "_002")
+    new_release = GUNW.replace("P05023", "P05030")
+    cached = {read: {"j": 0, "f": 1, "o": "POE", "r": 1, "m": 0, "d": 1}}
+    from_catalog = {
+        GUNW: {"j": 1, "f": 1, "o": "MOE"},
+        read: {"j": 1, "f": 1, "o": "MOE"},
+        new_release: {"j": 0, "f": 0, "o": "MOE"},
+    }
+
+    flags = builder.with_catalog_flags(cached, from_catalog)
+
+    assert flags[read] == cached[read]
+    # Never read: the catalog's flags and the release's RFI flag, in key order.
+    assert list(flags[GUNW].items()) == [("j", 1), ("f", 1), ("o", "MOE"), ("r", 1)]
+    # A release no cached granule belongs to gets no RFI flag.
+    assert flags[new_release] == {"j": 0, "f": 0, "o": "MOE"}
 
 
 def _fake_build(lines: list[str], returncode: int) -> contextlib.nullcontext:

@@ -698,6 +698,8 @@ def build_frame_data(
             "isCalVal": bool(row["isCalVal"]),
             "isSNWG": bool(row["isSNWG"]),
             "isDNC": bool(row["isDNC"]),
+            # Any land in the frame (the TrackFrame database's fractionLand > 0).
+            "hasLand": bool(row.get("hasLand", True)),
             "gslc_count": s["gslc_count"] if s else 0,
             "n_unique": s["n_unique"] if s else 0,
             "n_duplicate": s["n_duplicate"] if s else 0,
@@ -1423,10 +1425,12 @@ BODY_HTML = r"""<body>
           <div><b>Globe</b><span>every NISAR frame (~30,000); a few minutes and a large page</span></div></label>
         <label class="srch-opt"><input type="radio" name="srch-scope" value="bbox">
           <div><b>Screen view</b><span id="srch-bbox">the frames in the map's current view</span></div></label>
+        <label class="srch-opt"><input type="checkbox" id="srch-land">
+          <div><b>Land only</b><span>skip frames with no land, about half of the globe's</span></div></label>
         <label class="srch-opt"><input type="checkbox" id="srch-flags">
-          <div><b>Also collect missing granule flags</b><span>read from each product's metadata; slow for large areas</span></div></label>
+          <div><b>Also collect missing granule flags</b><span>from each QA_STATS.h5 with the QA metrics, about 75 granules a second</span></div></label>
         <label class="srch-opt"><input type="checkbox" id="srch-qa">
-          <div><b>Also collect missing QA metrics</b><span>from each QA_STATS.h5, about 25 granules a second</span></div></label>
+          <div><b>Also collect missing QA metrics</b><span>the same download, so either box fills both</span></div></label>
         <div class="bc-ctl"><button type="button" class="btn small primary" id="srch-go">Search &amp; rebuild</button>
           <a href="/" id="srch-home">back to the published view</a></div>
         <div class="stat-line">Searches CMR for GSLC and GUNW granules, builds the page on the QA helper and opens it.
@@ -1511,7 +1515,7 @@ BODY_HTML = r"""<body>
             <option data-product="gunw" value="gunw_net" id="opt-gunw-net" hidden>GUNW network (connected / disconnected)</option>
             <option value="flag_j" class="opt-flag" hidden>Flag: joint observation</option>
             <option value="flag_f" class="opt-flag" hidden>Flag: full frame</option>
-            <option value="flag_o" class="opt-flag" hidden>Flag: orbit type</option>
+            <option value="flag_o" class="opt-flag" hidden>Flag: orbit type (GUNW: reference)</option>
             <option value="flag_r" class="opt-flag" hidden>Flag: RFI mitigation applied</option>
             <option value="flag_m" class="opt-flag" hidden>Flag: mixed mode</option>
             <option value="flag_d" class="opt-flag" hidden>Flag: dithered</option>
@@ -1540,6 +1544,7 @@ BODY_HTML = r"""<body>
             <div class="cb-slider">Fill <input type="range" id="fill-opacity" min="0" max="100" value="32"><b><span id="opacity-val">32</span>%</b></div>
             <div class="cb-presets" id="sb-presets"></div>
             <div class="cb-slider">Outline <input type="range" id="outline-opacity" min="0" max="100" value="70"><b><span id="outline-val">70</span>%</b></div>
+            <div class="check-row"><input type="checkbox" id="sb-hide-empty"><label for="sb-hide-empty" style="margin:0;color:var(--text)">Hide frames with no value</label></div>
             <div id="colorby-legend" style="margin-top:6px;"></div>
             <button class="btn small" id="btn-reset-style" style="margin-top:8px;">Reset all to default</button>
           </div>
@@ -1601,6 +1606,7 @@ BODY_HTML = r"""<body>
         <div class="section-head" data-target="sec-flags"><span>Product / Site Flags</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-flags">
           <div class="check-row"><input type="checkbox" id="f-calval"><label for="f-calval" style="margin:0;color:var(--text)">CalVal frames only</label></div>
+          <div class="check-row" id="row-land" hidden><input type="checkbox" id="f-land"><label for="f-land" style="margin:0;color:var(--text)">Land frames only</label></div>
           <div class="check-row"><input type="checkbox" id="f-selected-only"><label for="f-selected-only" style="margin:0;color:var(--text)">Show only selected frames</label></div>
           <div class="check-row" id="row-gps" hidden><input type="checkbox" id="f-gps-show"><label for="f-gps-show" style="margin:0;color:var(--text)">Show UNR GPS sites (<span id="gps-count">0</span>)</label></div>
           <div class="stat-line" id="gps-hint" hidden>Nevada Geodetic Laboratory sites; click one for its position time series.</div>
@@ -1681,6 +1687,7 @@ BODY_HTML = r"""<body>
         <div class="cb-slider">Fill <input type="range" id="cb-fill" min="0" max="100"><b id="cb-fill-val"></b></div>
         <div class="cb-presets" id="cb-presets"></div>
         <div class="cb-slider">Outline <input type="range" id="cb-outline" min="0" max="100"><b id="cb-outline-val"></b></div>
+        <div class="check-row"><input type="checkbox" id="cb-hide-empty"><label for="cb-hide-empty" style="margin:0;color:var(--text)">Hide frames with no value</label></div>
         <div id="cb-month-row" hidden><div class="month-chips" id="cb-months"></div></div>
         <div id="cb-style-controls" style="margin-top:6px;"></div>
         <button class="btn small" id="cb-reset" style="margin-top:8px;">Reset this option</button>
@@ -1949,7 +1956,7 @@ APP_JS = r"""
     gunw_net:      { label:"GUNW network",         key:"_gunwNet",      kind:"cat" },
     flag_j:        { label:"Joint observation",    key:"_flag_j",       kind:"cat" },
     flag_f:        { label:"Full frame",           key:"_flag_f",       kind:"cat" },
-    flag_o:        { label:"Orbit type",           key:"_flag_o",       kind:"cat" },
+    flag_o:        { label:"Orbit type (GUNW: reference)", key:"_flag_o", kind:"cat" },
     flag_r:        { label:"RFI mitigation applied", key:"_flag_r",     kind:"cat" },
     flag_m:        { label:"Mixed mode",           key:"_flag_m",       kind:"cat" },
     flag_d:        { label:"Dithered",             key:"_flag_d",       kind:"cat" }
@@ -2540,6 +2547,26 @@ APP_JS = r"""
     return propArr.some(v => chipSet.has(v));
   }
 
+  // ---------- frames without a value for the colouring ----------
+  // "Hide frames with no value" (Style) drops the frames the current colouring
+  // has nothing to show for: a category of none / not collected / no GUNW, a
+  // number not read (QA), or no acquisitions at all. Zero duplicates or zero
+  // blackout months are values, and stay.
+  const EMPTY_CATS = new Set(["none", "not collected", "no GUNW", "undefined", "null", ""]);
+  const ZERO_IS_EMPTY = new Set(["gslc_count", "gunw_count", "n_modes"]);
+  let hideEmpty = false;
+  let filteredField = null;
+  function hasColorValue(p, field){
+    const def = COLOR_BY_FIELDS[field];
+    if (!def) return true;
+    const v = p[def.key];
+    if (def.kind === "num") {
+      if (v === null || v === undefined || v === "" || !Number.isFinite(Number(v))) return false;
+      return !(ZERO_IS_EMPTY.has(field) && Number(v) === 0);
+    }
+    return !EMPTY_CATS.has(String(v));
+  }
+
   function currentFiltered(opts){
     const ignoreRollout = !!(opts && opts.ignoreRollout);
     const trackSet = parseIntSet(document.getElementById("f-track").value);
@@ -2548,6 +2575,9 @@ APP_JS = r"""
     const idFilter = document.getElementById("f-id").value.trim().toLowerCase();
     const passVal = document.querySelector('input[name="pass"]:checked').value;
     const calval = document.getElementById("f-calval").checked;
+    const landOnly = document.getElementById("f-land").checked;
+    const colorSel = document.getElementById("color-by");
+    filteredField = colorSel ? colorSel.value : null;
     const selectedOnly = document.getElementById("f-selected-only").checked;
     return FRAME_DATA.features.filter(f=>{
       const p = f.properties;
@@ -2558,6 +2588,8 @@ APP_JS = r"""
           !String(p.frame_idx).includes(idFilter)) return false;
       if (passVal !== "all" && p.passDirection !== passVal) return false;
       if (calval && !p.isCalVal) return false;
+      if (landOnly && p.hasLand === false) return false;
+      if (hideEmpty && filteredField && !hasColorValue(p, filteredField)) return false;
       if (selectedOnly && !selected.has(p.id)) return false;
       if (!ignoreRollout && activeRollout.size) {
         const ro = asArray(p.rollout);
@@ -2665,8 +2697,10 @@ APP_JS = r"""
   }
 
   // ---------- per-granule flags ----------
-  // Collected from each product's HDF5 metadata (collect_granule_flags.py); an
-  // entry without ``fl`` has not been read yet.
+  // Joint observation, full frame, orbit type and RFI mitigation come with the
+  // catalog; mixed mode and dithered from each product's QA_STATS.h5
+  // (collect_granule_qa.py). A flag missing from ``fl`` (or no ``fl`` at all)
+  // has not been read yet.
   const FLAG_FIELDS = [
     {k:"j", lane:"joint obs"}, {k:"f", lane:"full frame"}, {k:"o", lane:"orbit"},
     {k:"r", lane:"RFI mitig."}, {k:"m", lane:"mixed mode"}, {k:"d", lane:"dithered"}
@@ -2675,11 +2709,12 @@ APP_JS = r"""
   // orbit lane keeps green out of its own palette so the two never meet.
   const FLAG_YES = "#2fbf71";
   const ORBIT_COLORS = {MOE:"#4da3ff", POE:"#4dd2c9", NOE:"#ffd24d", FOE:"#ff5d5d"};
+  function hasFlag(g, k){ return Boolean(g && g.fl && g.fl[k] !== undefined); }
 
   function orbitColorMap(){
     const seen = new Set();
     FRAME_DATA.features.forEach(f=>[...asArray(f.properties.granules), ...asArray(f.properties.gunw_ifgs)]
-      .forEach(g=>{ if (g.fl) seen.add(g.fl.o); }));
+      .forEach(g=>{ if (hasFlag(g, "o")) seen.add(g.fl.o); }));
     const m = new Map();
     uniqSorted(Array.from(seen)).forEach((v,i)=> m.set(v, ORBIT_COLORS[v] || CAT_PALETTE[(i + 4) % CAT_PALETTE.length]));
     m.set("mixed", "#a389ff");
@@ -2687,10 +2722,10 @@ APP_JS = r"""
     return m;
   }
 
-  // "all" / "some" / "none" of the entries that have flags; orbit type reports
-  // its value, or "mixed".
+  // "all" / "some" / "none" of the entries whose flag has been read; orbit
+  // type reports its value, or "mixed".
   function flagStatus(items, k){
-    const known = items.filter(g=>g.fl);
+    const known = items.filter(g=>hasFlag(g, k));
     if (!known.length) return "not collected";
     if (k === "o") {
       const vals = new Set(known.map(g=>g.fl.o));
@@ -2713,11 +2748,19 @@ APP_JS = r"""
     });
   }
 
+  // CMR's orbit type of a GUNW is its reference acquisition's; pairs read from
+  // the product before that carry both, as "reference/secondary".
+  function orbitLabel(g){
+    if (String(g.fl.o).includes("/")) return "orbit ref/sec";
+    return /_GUNW_/.test(g.gid || "") ? "ref. orbit" : "orbit";
+  }
+
   function flagLine(entries){
     const e = entries.find(g=>g && g.fl);
     if (!e) return META.has_flags ? `<br><span class="tdim">flags not collected</span>` : "";
     return `<br><span class="tdim">`+FLAG_FIELDS.map(ff=>
-      ff.k === "o" ? `orbit ${e.fl.o}` : `${ff.lane} ${e.fl[ff.k] ? "yes" : "no"}`).join(" &middot; ")+`</span>`;
+      !hasFlag(e, ff.k) ? `${ff.k === "o" ? "orbit" : ff.lane} not read` :
+      ff.k === "o" ? `${orbitLabel(e)} ${e.fl.o}` : `${ff.lane} ${e.fl[ff.k] ? "yes" : "no"}`).join(" &middot; ")+`</span>`;
   }
 
   // One lane per flag under a plot. ``entries`` carry the chart point index, a
@@ -2731,8 +2774,8 @@ APP_JS = r"""
       svg += `<line class="chart-grid" x1="${x0}" x2="${x1}" y1="${y}" y2="${y}" opacity="0.6"/>`+
              `<text class="chart-row-label" x="${x0-10}" y="${y+3.5}" text-anchor="end">${ff.lane}</text>`;
       entries.forEach(en=>{
-        const fl = en.g && en.g.fl;
-        if (!fl) return;
+        if (!hasFlag(en.g, ff.k)) return;
+        const fl = en.g.fl;
         const on = ff.k === "o" ? true : Boolean(fl[ff.k]);
         const color = ff.k === "o" ? (orbit.get(fl.o) || "#9a9a9a") : (on ? FLAG_YES : "#6b6b6b");
         const xa = xOf(en.ta).toFixed(1);
@@ -2744,7 +2787,7 @@ APP_JS = r"""
         }
       });
     });
-    const orbitKey = Array.from(orbit).filter(([v])=>entries.some(en=>en.g && en.g.fl && en.g.fl.o === v))
+    const orbitKey = Array.from(orbit).filter(([v])=>entries.some(en=>hasFlag(en.g, "o") && en.g.fl.o === v))
       .map(([v, c])=>`<span style="color:${c}">&#9679;</span> ${v}`).join(" ");
     const legend = `flags: <span style="color:${FLAG_YES}">&#9679;</span> yes &middot; `+
       `<span style="color:#6b6b6b">&middot;</span> no &middot; orbit ${orbitKey}`;
@@ -3354,6 +3397,7 @@ APP_JS = r"""
     try {
       const r = await fetch(`${qaHelper}/build`, {method:"POST", headers:{"Content-Type":"application/json"},
                                                   body: JSON.stringify({scope, bbox: scope === "bbox" ? viewBbox() : null,
+                                                                        land: document.getElementById("srch-land").checked,
                                                                         flags: document.getElementById("srch-flags").checked,
                                                                         qa: document.getElementById("srch-qa").checked})});
       const j = await r.json();
@@ -3650,7 +3694,9 @@ APP_JS = r"""
 
   ["f-track","f-frame","f-cycle","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
   document.querySelectorAll('input[name="pass"]').forEach(r=>r.addEventListener("change", applyFilters));
-  ["f-calval","f-selected-only"].forEach(id=>document.getElementById(id).addEventListener("change", applyFilters));
+  ["f-calval","f-land","f-selected-only"].forEach(id=>document.getElementById(id).addEventListener("change", applyFilters));
+  // Pages built before frames carried hasLand have nothing to filter on.
+  document.getElementById("row-land").hidden = !FRAME_DATA.features.some(f=>f.properties.hasLand !== undefined);
 
   document.getElementById("btn-clear-filters").addEventListener("click", ()=>{
     document.getElementById("f-track").value = "";
@@ -3659,6 +3705,7 @@ APP_JS = r"""
     document.getElementById("f-id").value = "";
     document.querySelector('input[name="pass"][value="all"]').checked = true;
     document.getElementById("f-calval").checked = false;
+    document.getElementById("f-land").checked = false;
     document.getElementById("f-selected-only").checked = false;
     document.getElementById("f-date-start").value = "";
     document.getElementById("f-date-end").value = "";
@@ -3861,11 +3908,11 @@ APP_JS = r"""
     URL.revokeObjectURL(a.href);
   }
   document.getElementById("btn-export-csv").addEventListener("click", ()=>{
-    const rows = [["frame_id","track","frame","passDirection","color","gslc_count","n_unique","n_duplicate","cons_mode","cons_cov","n_modes","n_full","n_partial","isCalVal","isSNWG","isDNC","rollout","rollout_regions"]];
+    const rows = [["frame_id","track","frame","passDirection","color","gslc_count","n_unique","n_duplicate","cons_mode","cons_cov","n_modes","n_full","n_partial","isCalVal","isSNWG","isDNC","hasLand","rollout","rollout_regions"]];
     Array.from(selected.values()).forEach(e=>{
       const p = e.feature.properties;
       rows.push([p.frame_idx,p.track,p.frame,p.passDirection,e.color,p.gslc_count,p.n_unique,p.n_duplicate,p.cons_mode,p.cons_cov,
-        p.n_modes,p.n_full,p.n_partial,p.isCalVal,p.isSNWG,p.isDNC,
+        p.n_modes,p.n_full,p.n_partial,p.isCalVal,p.isSNWG,p.isDNC,p.hasLand,
         asArray(p.rollout).join(";"),asArray(p.rollout_regions).join(";")]);
     });
     downloadBlob(toCsv(rows), "nisar_selected_frames.csv", "text/csv");
@@ -5536,6 +5583,9 @@ APP_JS = r"""
     };
     applyColorBy = function(){
       const field = document.getElementById("color-by").value;
+      // The hidden frames follow the colouring, so a new one re-filters first
+      // (which comes back here).
+      if (hideEmpty && field !== filteredField) { applyFilters(); return; }
       document.getElementById("bo-month-row").hidden = field !== "blackout_month";
       document.getElementById("colorby-scope").hidden = !SELECTION_FIELDS.has(field);
       paintFrames();
@@ -5547,13 +5597,20 @@ APP_JS = r"""
     document.getElementById("color-by").addEventListener("change", applyColorBy);
     document.getElementById("fill-opacity").addEventListener("input", e=> setFrameOpacity("fill", Number(e.target.value)));
     document.getElementById("outline-opacity").addEventListener("input", e=> setFrameOpacity("outline", Number(e.target.value)));
+    const setHideEmpty = on=>{
+      hideEmpty = on;
+      ["sb-hide-empty","cb-hide-empty"].forEach(id=>{ document.getElementById(id).checked = on; });
+      applyFilters();
+    };
+    ["sb-hide-empty","cb-hide-empty"].forEach(id=>
+      document.getElementById(id).addEventListener("change", e=> setHideEmpty(e.target.checked)));
     document.getElementById("btn-reset-style").addEventListener("click", ()=>{
       Object.keys(baseColorMapsCache).forEach(k=>delete baseColorMapsCache[k]);
       Object.keys(numStyle).forEach(k=>delete numStyle[k]);
       cmapPopOpen = false;
       document.getElementById("color-by").value = "gslc_count";
       frameStyle.fill = 32; frameStyle.outline = 70;
-      applyColorBy();
+      setHideEmpty(false);
     });
     syncColorByOptions();
     applyColorBy();

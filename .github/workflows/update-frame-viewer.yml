@@ -141,23 +141,17 @@ jobs:
           echo "RENDER_ARGS=$(echo $RENDER_ARGS)" >> "$GITHUB_ENV"
           python scripts/generate_scope_viewer.py $RENDER_ARGS
 
-      # Mixed mode, dithering and RFI mitigation are only inside the products, so
-      # each granule is read once (byte ranges, not the whole file) and cached on
-      # main; a weekly run reads only the granules published since the last one.
-      # The page rendered above lists the granules to read.
-      - name: Collect per-granule flags
-        run: |
-          python scripts/collect_granule_flags.py \
-            --viewer-html "${VIEWER_HTML}" \
-            --output catalog/granule_flags.json.gz
-
-      # QA metrics (coherence, connected components, ionosphere, RFI) come from
-      # each product's small QA_STATS.h5, cached the same way as the flags.
-      - name: Collect per-granule QA metrics
+      # The flags and QA metrics (coherence, connected components, ionosphere,
+      # RFI) come from each product's small QA_STATS.h5, one download filling
+      # both caches, with the orbit type from CMR. Each granule is read once and
+      # cached on main; a weekly run reads only the granules published since the
+      # last one. The page rendered above lists the granules to read.
+      - name: Collect per-granule flags and QA metrics
         run: |
           python scripts/collect_granule_qa.py \
             --viewer-html "${VIEWER_HTML}" \
-            --output catalog/granule_qa.json.gz
+            --output catalog/granule_qa.json.gz \
+            --flags-output catalog/granule_flags.json.gz
 
       - name: Render the viewer HTML with the flags and QA metrics
         run: |

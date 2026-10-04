@@ -14,9 +14,10 @@ so a North American frame has the same number in every scope. GSLC and GUNW
 granules come from one CMR search each (the whole archive, or the box); blackout
 dates, granule flags and QA metrics are attached from the repo's caches where
 they cover a frame or granule; on request, the flags and QA metrics of granules
-the caches miss are collected first (``collect_granule_flags.py`` /
-``collect_granule_qa.py``, Earthdata login in ``~/.netrc``) into local caches
-beside the page, so the repo's own caches are left untouched. The consistent
+the caches miss are collected first into local caches beside the page, so the
+repo's own caches are left untouched. Both come from one small ``QA_STATS.h5``
+download per granule (``collect_granule_qa.py``, Earthdata login in
+``~/.netrc``), with the orbit type taken from the CMR search. The consistent
 mode is computed from the catalog.
 
 ``scripts/qa_browse_server.py`` runs it when the viewer's search button asks;
@@ -42,6 +43,7 @@ import shapely
 from shapely.geometry import box
 
 import generate_scope_viewer as gen
+from collect_granule_qa import catalog_flags, release_group, rfi_by_release
 
 REPO = Path(__file__).resolve().parents[1]
 BLACKOUT_JSON = REPO / "catalog" / "opera-nisar-disp-blackout-dates.json"
@@ -57,7 +59,10 @@ GRID = 1e-4
 
 
 def select_frames(
-    trackframe_gpkg: Path, scope: str, bbox: tuple[float, ...] | None = None
+    trackframe_gpkg: Path,
+    scope: str,
+    bbox: tuple[float, ...] | None = None,
+    land_only: bool = False,
 ) -> gpd.GeoDataFrame:
     """Return the frames of ``scope`` with the columns the viewer reads.
 
@@ -69,6 +74,8 @@ def select_frames(
         ``na``, ``globe`` or ``bbox``.
     bbox : tuple of float, optional
         ``west, south, east, north`` for the ``bbox`` scope.
+    land_only : bool
+        Drop the frames with no land (the database's ``hasLand``).
 
     Returns
     -------
@@ -91,14 +98,47 @@ def select_frames(
         gdf = gdf[gdf.intersects(box(*bbox))]
     elif scope != "globe":
         raise ValueError(f"unknown scope {scope!r}; expected one of {SCOPES}")
+    if land_only:
+        gdf = gdf[gdf["hasLand"].astype(bool)]
     gdf = gdf.copy()
     gdf["direction"] = gdf["passDirection"].str[0]
     gdf["geometry"] = shapely.set_precision(gdf.geometry.values, GRID)
     return gdf
 
 
-def search_gslc(bbox: tuple[float, ...] | None, workdir: Path) -> pd.DataFrame:
-    """Search CMR for GSLC granules and parse them into the viewer's catalog."""
+def with_catalog_flags(
+    cached: dict[str, dict], from_catalog: dict[str, dict]
+) -> dict[str, dict]:
+    """Granule flags: the cached ones over those the catalog gives.
+
+    The catalog's ``j f o`` gain the RFI mitigation flag of the granule's
+    release, where the cached flags agree on one, so a granule never read
+    shows four of its six flags.
+
+    Examples
+    --------
+    >>> gslc = ("NISAR_L2_PR_GSLC_031_155_D_084_4005_DHDH_A_20260928T231125_"
+    ...         "20260928T231159_P05023_N_F_J_001")
+    >>> old = gslc.replace("_001", "_002")
+    >>> with_catalog_flags({old: {"r": 0, "m": 1}}, {gslc: {"j": 1, "o": "MOE"}})[gslc]
+    {'j': 1, 'o': 'MOE', 'r': 0}
+
+    """
+    rfi = rfi_by_release(cached)
+    out = {}
+    for gid in {**from_catalog, **cached}:
+        value = dict(from_catalog.get(gid, {}))
+        if release_group(gid) in rfi:
+            value["r"] = rfi[release_group(gid)]
+        value.update(cached.get(gid, {}))
+        out[gid] = {k: value[k] for k in "jformd" if k in value}
+    return out
+
+
+def search_gslc(
+    bbox: tuple[float, ...] | None, workdir: Path
+) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Search CMR for GSLC granules: the viewer's catalog and their CMR flags."""
     from nisar_db.gslc_catalog import parse_gslc_list, write_catalog_csv
     from nisar_db.search.cmr import search_nisar_products
     from nisar_db.search.frames import products_to_dataframe
@@ -110,7 +150,7 @@ def search_gslc(bbox: tuple[float, ...] | None, workdir: Path) -> pd.DataFrame:
     parsed, _failed = parse_gslc_list(listing)
     catalog_csv = workdir / "gslc_catalog.csv"
     write_catalog_csv(parsed, catalog_csv)
-    return gen.load_gslc_catalog_csv(catalog_csv)
+    return gen.load_gslc_catalog_csv(catalog_csv), catalog_flags(products)
 
 
 def gunw_rows(names: list[str]) -> pd.DataFrame:
@@ -149,71 +189,64 @@ def gunw_rows(names: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=gen._GUNW_COLUMNS).drop_duplicates("granule_id")
 
 
-def search_gunw(bbox: tuple[float, ...] | None) -> pd.DataFrame:
-    """Search CMR for GUNW granules and parse them into the viewer's catalog."""
+def search_gunw(
+    bbox: tuple[float, ...] | None,
+) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Search CMR for GUNW granules: the viewer's catalog and their CMR flags."""
     from nisar_db.search.cmr import search_nisar_products
 
     products = search_nisar_products(bbox=bbox, product_type="GUNW", max_results=0)
-    return gunw_rows([p.name for p in products])
+    return gunw_rows([p.name for p in products]), catalog_flags(products)
 
 
-def merged_cache(
-    repo_cache: Path,
-    local_cache: Path | None,
-    ids: list[str],
-    collector: Callable[..., None] | None = None,
-    label: str = "",
-    progress: Callable[[str], None] = print,
-    workers: int = 16,
-) -> dict[str, dict]:
-    """Read a per-granule cache, the repo's merged with a local one.
+def on_frames(rows: pd.DataFrame, frames: gpd.GeoDataFrame) -> pd.DataFrame:
+    """The catalog rows of the frames in ``frames``, by track, frame and direction.
 
-    Parameters
-    ----------
-    repo_cache : Path
-        The cache kept in the repository (flags or QA metrics).
-    local_cache : Path or None
-        A cache beside the built pages that collection writes to.
-    ids : list of str
-        The granules of this view.
-    collector : callable, optional
-        ``collect(ids, output, workers, progress=...)`` from
-        ``collect_granule_flags`` or ``collect_granule_qa``. When given, the
-        granules of ``ids`` neither cache holds are read into ``local_cache``
-        first.
-    label : str
-        What is collected, for the progress messages.
-    progress : callable
-        Called with a short message as collection advances.
-    workers : int
-        Worker processes reading at once.
-
-    Returns
-    -------
-    dict
-        Granule id to its flags or QA metrics.
+    Examples
+    --------
+    >>> frames = pd.DataFrame({"track": [1], "frame": [10], "direction": ["A"]})
+    >>> rows = pd.DataFrame({"track": [1, 1], "frame": [10, 10],
+    ...                      "direction": ["A", "D"], "granule_id": ["a", "d"]})
+    >>> list(on_frames(rows, frames)["granule_id"])
+    ['a']
 
     """
+    keys = ["track", "frame", "direction"]
+    wanted = pd.MultiIndex.from_frame(frames[keys].astype({"track": int, "frame": int}))
+    have = pd.MultiIndex.from_frame(rows[keys].astype({"track": int, "frame": int}))
+    return rows[have.isin(wanted)]
+
+
+def merged_cache(repo_cache: Path, local_cache: Path | None) -> dict[str, dict]:
+    """Read a per-granule cache, the repo's updated with a local one."""
     cache = gen.load_granule_flags(repo_cache) if repo_cache.exists() else {}
     if local_cache is not None and local_cache.exists():
         cache.update(gen.load_granule_flags(local_cache))
-    if collector is None:
-        return cache
-    if local_cache is None:
-        raise ValueError("collecting needs a local cache to write to")
-    missing = [g for g in dict.fromkeys(ids) if g not in cache]
-    if not missing:
-        progress(f"All {label} already cached")
-        return cache
-    progress(f"Collecting {label} for {len(missing):,} granules")
-    collector(
-        missing,
-        local_cache,
-        workers,
-        progress=lambda m: progress(f"{label}: {m.strip()}"),
-    )
-    cache.update(gen.load_granule_flags(local_cache))
     return cache
+
+
+def to_collect(
+    ids: list[str],
+    flags: dict[str, dict],
+    qa: dict[str, dict],
+    collect_flags: bool,
+    collect_qa: bool,
+) -> list[str]:
+    """The granules of ``ids`` whose requested flags or QA metrics are not cached.
+
+    Examples
+    --------
+    >>> to_collect(["A", "B", "B", "C"], {"A": {}, "B": {}}, {"A": {}}, True, False)
+    ['C']
+    >>> to_collect(["A", "B", "C"], {"A": {}, "B": {}}, {"A": {}}, True, True)
+    ['B', 'C']
+
+    """
+    return [
+        g
+        for g in dict.fromkeys(ids)
+        if (collect_flags and g not in flags) or (collect_qa and g not in qa)
+    ]
 
 
 def build_view(
@@ -225,6 +258,7 @@ def build_view(
     collect_flags: bool = False,
     collect_qa: bool = False,
     cache_dir: Path | None = None,
+    land_only: bool = False,
 ) -> dict:
     """Search CMR, build the frame data for ``scope`` and write the page.
 
@@ -245,6 +279,8 @@ def build_view(
         (needs ``~/.netrc`` and ``cache_dir``).
     cache_dir : Path, optional
         Where the local flag and QA caches live.
+    land_only : bool
+        Leave out the frames with no land.
 
     Returns
     -------
@@ -253,7 +289,7 @@ def build_view(
 
     """
     progress("Selecting frames")
-    gdf = select_frames(trackframe_gpkg, scope, bbox)
+    gdf = select_frames(trackframe_gpkg, scope, bbox, land_only)
     gdf["isCalVal"] = gen.flag_calval_frames(gdf, gpd.read_file(gen.CALVAL_SITES))
     rollout_options, gdf["rollout"], gdf["rollout_regions"] = gen.rollout_by_frame(
         gdf, gen.ROLLOUT_REGIONS
@@ -265,38 +301,43 @@ def build_view(
 
     with tempfile.TemporaryDirectory() as tmp:
         progress(f"Searching CMR for GSLC granules ({len(gdf)} frames)")
-        catalog = search_gslc(search_box, Path(tmp))
+        catalog, cmr_flags = search_gslc(search_box, Path(tmp))
     progress(f"Searching CMR for GUNW granules ({len(catalog)} GSLC found)")
-    gunw = search_gunw(search_box)
+    gunw, gunw_flags = search_gunw(search_box)
+    cmr_flags.update(gunw_flags)
 
-    ids = list(catalog["granule_id"]) + list(gunw["granule_id"])
+    # The globe and North America searches cover the whole archive; only the
+    # granules of this page's frames are worth collecting.
+    ids = list(on_frames(catalog, gdf)["granule_id"]) + list(
+        on_frames(gunw, gdf)["granule_id"]
+    )
     local = Path(cache_dir) if cache_dir is not None else None
-    flags_collector: Callable[..., None] | None = None
-    qa_collector: Callable[..., None] | None = None
-    if collect_flags:
-        from collect_granule_flags import collect
+    local_flags = local / "granule_flags.json.gz" if local else None
+    local_qa = local / "granule_qa.json.gz" if local else None
+    flags = merged_cache(GRANULE_FLAGS, local_flags)
+    qa = merged_cache(GRANULE_QA, local_qa)
+    missing = to_collect(ids, flags, qa, collect_flags, collect_qa)
+    if collect_flags or collect_qa:
+        if local_qa is None or local_flags is None:
+            raise ValueError("collecting needs a cache directory to write to")
+        if missing:
+            from collect_granule_qa import collect
 
-        flags_collector = collect
-    if collect_qa:
-        from collect_granule_qa import collect as collect_qa_metrics
-
-        qa_collector = collect_qa_metrics
-    flags = merged_cache(
-        GRANULE_FLAGS,
-        local / "granule_flags.json.gz" if local else None,
-        ids,
-        flags_collector,
-        "flags",
-        progress,
-    )
-    qa = merged_cache(
-        GRANULE_QA,
-        local / "granule_qa.json.gz" if local else None,
-        ids,
-        qa_collector,
-        "QA metrics",
-        progress,
-    )
+            progress(f"Collecting flags and QA for {len(missing):,} granules")
+            # Each QA file fills both caches, so both are kept up to date
+            # whichever was asked for.
+            collect(
+                missing,
+                local_qa,
+                progress=lambda m: progress(f"flags + QA: {m.strip()}"),
+                flags_output=local_flags,
+                orbits={g: v["o"] for g, v in cmr_flags.items() if "o" in v},
+                known_flags=flags,
+            )
+            flags = merged_cache(GRANULE_FLAGS, local_flags)
+            qa = merged_cache(GRANULE_QA, local_qa)
+        else:
+            progress("All flags and QA metrics already cached")
     progress(f"Building {len(gdf)} frames ({len(gunw)} GUNW found)")
     blackout = (
         gen.load_period_json(BLACKOUT_JSON, "blackout_dates", "data")
@@ -304,6 +345,7 @@ def build_view(
         else None
     )
     frame_data = gen.build_frame_data(gdf, catalog, None, blackout, None, gunw=gunw)
+    flags = with_catalog_flags(flags, cmr_flags)
     n_flagged = gen.attach_granule_flags(frame_data, flags) if flags else 0
     n_qa = gen.attach_granule_qa(frame_data, qa) if qa else 0
 
@@ -372,6 +414,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Read the QA metrics the caches miss (needs --cache-dir, ~/.netrc).",
     )
     parser.add_argument(
+        "--land-only",
+        action="store_true",
+        help="Leave out the frames with no land (about half of the globe's).",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=None,
@@ -396,6 +443,7 @@ def main(argv: list[str] | None = None) -> None:
         collect_flags=args.collect_flags,
         collect_qa=args.collect_qa,
         cache_dir=args.cache_dir,
+        land_only=args.land_only,
     )
     say(META_LINE + json.dumps({"n_frames": meta["n_frames"]}))
 

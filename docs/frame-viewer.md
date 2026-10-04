@@ -45,8 +45,14 @@ current colormap) of perceptual (Viridis, Turbo,
 Batlow, ...), single hue (Blues, Greens, ...), multi hue (YlOrRd, YlGnBu, ...)
 and diverging (RdBu, Vik, Roma, ...), invert it, or fix its min / max; an empty
 range, or **Auto**, fits the frames shown again. Every swatch of a categorical
-legend is a colour picker — click one to recolour that category. **Reset all to
-default** puts colours, colormaps, ranges and opacities back.
+legend is a colour picker — click one to recolour that category. **Hide frames
+with no value** removes the frames the current colouring has nothing for: a
+category of *none*, *not collected* or *no GUNW*, a QA metric not read yet, or
+no acquisitions / interferograms / modes at all (zero duplicates or zero
+blackout months are values, and stay). It filters like the other filters, so
+the counts and charts follow, and it follows the colouring when that changes.
+**Reset all to default** puts colours, colormaps, ranges and opacities back, and
+shows every frame again.
 
 Clicking a frame opens the frame panel; drag its bottom-right corner to resize
 it, or use ⤢ to widen it (the map pans to keep it on screen). Its other parts: **Show granules** expands the granule
@@ -89,10 +95,20 @@ mitigation applied, mixed mode and dithered. A frame reads *all*, *some* or
 *none* of its acquisitions under the current mode / polarization chips; orbit
 type shows its value, or *mixed*. **Show flags** in the plot window adds one lane
 per flag under the GSLC timeline and the GUNW pair plot, and the hover tooltip
-lists every flag of the granule or pair. `scripts/collect_granule_flags.py`
-reads the flags with HTTP byte-range requests (an Earthdata login in
-`~/.netrc`) into `catalog/granule_flags.json.gz`; the weekly viewer build reads
-only the granules published since the last run.
+lists every flag of the granule or pair. `scripts/collect_granule_qa.py
+--flags-output` reads the flags from each product's small `QA_STATS.h5` (an
+Earthdata login in `~/.netrc`), with the orbit type from CMR, into
+`catalog/granule_flags.json.gz`; the weekly viewer build reads only the
+granules published since the last run. A GUNW's orbit type is its reference
+acquisition's, the one CMR records; pairs read from the product before carry
+both as *reference/secondary* (e.g. `MOE/FOE`). Joint observation, full frame and
+orbit type are also in every granule's CMR record, and RFI mitigation is the
+same for every granule of a product type and release, so a local rebuild shows
+those four for every granule; mixed mode and dithering wait for the download
+and read *not read* until then.
+
+Where each flag, QA metric and frame value comes from is listed in
+[Viewer data sources](data-sources.md).
 
 **QA metrics.** When the viewer is built with `--granule-qa`, the
 **Quality (QA)** group of **Color frames by** paints each frame by a metric from
@@ -130,7 +146,8 @@ segments by one metric, so poor pairs stand out in the network. The tooltips,
 the frame popup's QA line and the CSV export carry the values.
 
 `scripts/collect_granule_qa.py` downloads the QA files into
-`catalog/granule_qa.json.gz`. The weekly build reads only new granules, and a
+`catalog/granule_qa.json.gz`, 48 at a time; with `--flags-output` it also fills
+the flag cache from the same files. The weekly build reads only new granules, and a
 granule withdrawn from the archive is cached as empty.
 
 **Browse and QA images.** Each row in the granule or interferogram list has a
@@ -206,9 +223,15 @@ next to the key. The first click opens its choices, and a second click (or
 | **Globe** | every frame of the NISAR TrackFrame database, about 30,000 | about 5 minutes, ~10 GB of memory | about 70 MB, 10-20 s to draw |
 | **Screen view** | the frames in the map's current view | seconds | small |
 
+**Land only** leaves the frames with no land out of the page, and their
+granules out of any collection: about half the globe's frames are open ocean.
 Two boxes in the same panel also collect what the caches miss: **granule
-flags** (read from each product's metadata, about 5 granules a second) and **QA
-metrics** (each `QA_STATS.h5`, about 20 a second). Both are written to the
+flags** and **QA metrics**. Both come from one download of each granule's small
+`QA_STATS.h5`, about 75 granules a second (a globe of ~185,000 granules in
+about 40 minutes), so ticking either box fills both. The orbit type comes from
+the CMR search, and the RFI mitigation flag, which no small file records, is
+inherited from the granules of the same product type and release already read
+(one product read for a release not seen before). Both are written to the
 helper's cache, not the repository's, and need the Earthdata login in
 `~/.netrc`.
 
@@ -341,7 +364,9 @@ cycles; its name carries both.
 
 **Show only selected frames**, in the same section, narrows the map, the
 summary and the over-time chart to the frames in your selection, on top of
-whatever other filters are set.
+whatever other filters are set. **Land frames only** hides the frames with no
+land at all (the TrackFrame database's `hasLand`, i.e. `fractionLand` above
+zero): about half of the globe's frames, and 30 of North America's 1,295.
 
 !!! note "Where the CalVal frames come from"
     **CalVal frames only** shows the NISAR frames over the twelve DISP-S1

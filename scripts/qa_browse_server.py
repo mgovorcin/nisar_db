@@ -514,6 +514,7 @@ class ViewBuilds:
         bbox: list[float] | None,
         collect_flags: bool = False,
         collect_qa: bool = False,
+        land_only: bool = False,
     ) -> dict:
         """Start a build unless one is running; return its status.
 
@@ -548,6 +549,7 @@ class ViewBuilds:
                 "bbox": bbox if scope == "bbox" else None,
                 "collect_flags": bool(collect_flags),
                 "collect_qa": bool(collect_qa),
+                "land_only": bool(land_only),
                 "state": "running",
                 "step": "Starting",
                 "started": time.time(),
@@ -586,6 +588,8 @@ class ViewBuilds:
             cmd.append("--collect-flags")
         if job["collect_qa"]:
             cmd.append("--collect-qa")
+        if job.get("land_only"):
+            cmd.append("--land-only")
         tail: list[str] = []
         meta: dict = {}
         with subprocess.Popen(
@@ -755,6 +759,7 @@ def make_handler(
                             body.get("bbox"),
                             collect_flags=bool(body.get("flags")),
                             collect_qa=bool(body.get("qa")),
+                            land_only=bool(body.get("land")),
                         )
                     )
                 except (ValueError, TypeError) as exc:

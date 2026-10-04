@@ -47,7 +47,9 @@ nav:
   - Tutorials:
       - Build a consistent-mode database: tutorials/consistent-mode-database.md
       - Derive blackout dates from snow cover: tutorials/snow-analysis.md
-  - Frame viewer: frame-viewer.md
+  - Frame viewer:
+      - Frame viewer: frame-viewer.md
+      - Viewer data sources: data-sources.md
 
 markdown_extensions:
   - admonition
