@@ -656,3 +656,38 @@ def test_cycle_filter_narrows_the_counts() -> None:
     )
     # A pair matches on either acquisition's cycle.
     assert out == [1, 3, 2, 1]
+
+
+def test_plate_label_sits_inside_the_plate_and_ignores_cuts() -> None:
+    plates = {
+        "features": [
+            {
+                "properties": {"PlateName": "Square"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[10, -5], [20, -5], [20, 5], [10, 5], [10, -5]]],
+                },
+            },
+            {
+                # A plate cut at the antimeridian: the cut edge must not pull
+                # the label towards 180.
+                "properties": {"PlateName": "Cut"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[170, 0], [180, 0], [180, 10], [170, 10], [170, 0]]
+                    ],
+                },
+            },
+        ]
+    }
+    out = run_js(
+        ["plateLabelPoints"],
+        f"return plateLabelPoints({json.dumps(plates)}).features"
+        ".map(f => [f.properties.name, ...f.geometry.coordinates]);",
+    )
+    by_name = {name: (lon, lat) for name, lon, lat in out}
+    lon, lat = by_name["Square"]
+    assert abs(lon - 15) < 0.5 and abs(lat) < 0.5
+    lon, _ = by_name["Cut"]
+    assert lon < 176

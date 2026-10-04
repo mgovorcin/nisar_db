@@ -303,6 +303,14 @@ Clicking a volcano gives its type, country, last eruption, elevation and
 evidence, any USGS alert with its notice, and links to its GVP page and its
 USGS observatory page.
 
+**Tectonic plates.** The *plates* button draws the plate boundaries of Bird
+(2003), PB2002, fetched from
+[fraxen/tectonicplates](https://github.com/fraxen/tectonicplates) on first use.
+Subduction zones are drawn a little thicker, and hovering a boundary names its
+two plates. A second click adds the plate names, and a third hides them. The
+button works as in the geepers UNR grid viewer. The boundaries sit above the
+frames and below earthquakes and volcanoes.
+
 **CRID.** The **Mode / Polarization / CRID** section also lists the composite
 release IDs (`P05023`, ...) read from the granule names. Selecting some narrows
 the map to frames with granules from those releases and recounts the colourings

@@ -3933,7 +3933,7 @@ APP_JS = r"""
   // Overlay switches stack above the globe toggle. Each click steps through
   // off -> layer -> layer + panel -> off, so the map can carry the layer
   // without its panel in the way.
-  const overlayState = {snow:0, rollout:0, colorby:0, quake:0, volcano:0};
+  const overlayState = {snow:0, rollout:0, colorby:0, quake:0, volcano:0, plates:0};
   // Point layers (earthquakes, volcanoes) step through: points, options,
   // legend, labels, off. The area overlays step through layer, panel, off.
   const FIVE_STEP = new Set(["quake", "volcano"]);
@@ -3975,6 +3975,10 @@ APP_JS = r"""
     `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
     `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`), "bottom-right");
 
+  map.addControl(overlayControl("plates", "Tectonic plates",
+    // Same glyph as the geepers viewer's plates tool.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 9 9l5 3-5 4 3 5"/><path d="M3 9h3M18 15h3"/></g></svg>`), "bottom-right");
   map.addControl(overlayControl("volcano", "Volcanoes",
     // A cone with a plume.
     `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
@@ -4202,6 +4206,13 @@ APP_JS = r"""
     if (btn) {
       btn.classList.toggle("active", on);
       btn.title = `${btn.getAttribute("aria-label")} - ${["off","layer shown","layer and panel shown"][level]}; click for ${["layer","panel","off"][level]}`;
+    }
+    // Plates have no panel: boundaries, then plate names, then off.
+    if (key === "plates") {
+      if (btn) btn.title = `${btn.getAttribute("aria-label")} - ${["off","boundaries shown","boundaries and plate names shown"][level]}; `+
+        `click for ${["boundaries","plate names","off"][level]}`;
+      showPlates(level);
+      return;
     }
     document.getElementById(`${key}-panel`).hidden = level < 2;
     if (FIVE_STEP.has(key)) {
@@ -4431,6 +4442,92 @@ APP_JS = r"""
     raisingPoints = false;
   }
   map.on("styledata", raisePointLayers);
+
+
+  // ---------- tectonic plates ----------
+  // Bird (2003), PB2002, via fraxen/tectonicplates on GitHub, which allows
+  // any origin. Boundaries first; plate names on a second click.
+  // Adapted from the geepers UNR grid viewer (scripts/browse_unr_grid.html,
+  // opera-adt/geepers): the same files, cycle and label placement.
+  const PLATES_URL = "https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/";
+  let platesLoading = null, plateNamesLoading = null;
+  async function fetchPlates(name){
+    const r = await fetch(PLATES_URL + name);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+  // One label point per plate: the mean direction of its boundary, which
+  // needs no unwrapping at the antimeridian, where the file cuts plates.
+  function plateLabelPoints(plates){
+    const RAD = Math.PI / 180, sums = {};
+    for (const f of plates.features) {
+      const sum = sums[f.properties.PlateName] ??= [0, 0, 0];
+      const polygons = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+      for (const [ring] of polygons) {
+        for (let i = 1; i < ring.length; i++) {
+          const [x0, y0] = ring[i - 1], [x1, y1] = ring[i];
+          // Edges along the antimeridian or at a pole are cuts, not plate boundary.
+          if (Math.min(Math.abs(x0), Math.abs(x1)) > 179.999 || Math.min(Math.abs(y0), Math.abs(y1)) > 89.999) continue;
+          const lon = (x0 + x1) / 2 * RAD, lat = (y0 + y1) / 2 * RAD;
+          const length = Math.hypot((x1 - x0) * Math.cos(lat), y1 - y0);
+          sum[0] += length * Math.cos(lat) * Math.cos(lon);
+          sum[1] += length * Math.cos(lat) * Math.sin(lon);
+          sum[2] += length * Math.sin(lat);
+        }
+      }
+    }
+    return {type:"FeatureCollection", features: Object.entries(sums).map(([name, [x, y, z]])=>({
+      type:"Feature", properties:{name},
+      geometry:{type:"Point", coordinates:[Math.atan2(y, x) / RAD, Math.atan2(z, Math.hypot(x, y)) / RAD]}}))};
+  }
+  async function showPlates(level){
+    const set = (id, on)=>{ if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); };
+    if (level === 0) { set("plates-line", false); set("plate-names", false); return; }
+    try {
+      if (!map.getSource("plates")) {
+        platesLoading ??= fetchPlates("PB2002_boundaries.json");
+        const data = await platesLoading;
+        if (!map.getSource("plates")) {
+          map.addSource("plates", {type:"geojson", data, attribution:"Plate boundaries: Bird (2003)"});
+          // Above the frames and area overlays; earthquakes and volcanoes are
+          // raised above it.
+          map.addLayer({id:"plates-line", type:"line", source:"plates",
+            paint:{"line-color":"#e05c2f", "line-opacity":0.9,
+                   "line-width":["case", ["==", ["get", "Type"], "subduction"], 2.2, 1.4]}});
+          const tip = new maplibregl.Popup({closeButton:false, closeOnClick:false, offset:6});
+          map.on("mousemove", "plates-line", e=>{
+            const p = e.features[0].properties;
+            tip.setLngLat(e.lngLat).setHTML(`<div class="pop-row">Plate boundary ${p.PlateA}-${p.PlateB}`+
+              `${p.Type ? ` &middot; ${p.Type}` : ""}</div>`).addTo(map);
+          });
+          map.on("mouseleave", "plates-line", ()=> tip.remove());
+        }
+      }
+      if (overlayState.plates === 0) return;   // switched off while loading
+      set("plates-line", true);
+      if (level === 2) {
+        if (!map.getSource("plate-names")) {
+          plateNamesLoading ??= fetchPlates("PB2002_plates.json").then(plateLabelPoints);
+          const names = await plateNamesLoading;
+          if (!map.getSource("plate-names")) {
+            map.addSource("plate-names", {type:"geojson", data: names});
+            map.addLayer({id:"plate-names", type:"symbol", source:"plate-names",
+              layout:{"text-field":["get", "name"], "text-font":["Open Sans Semibold"],
+                      "text-size":["interpolate", ["linear"], ["zoom"], 1, 10, 6, 15],
+                      "text-transform":"uppercase", "text-letter-spacing":0.12, "text-max-width":7},
+              paint:{"text-color":"#a63c17", "text-halo-color":"rgba(255,255,255,0.85)", "text-halo-width":1.4}});
+          }
+        }
+        if (overlayState.plates === 2) set("plate-names", true);
+      } else set("plate-names", false);
+    } catch (err) {
+      overlayState.plates = 0;
+      if (overlayButtons.plates) {
+        overlayButtons.plates.classList.remove("active");
+        overlayButtons.plates.title = `Tectonic plates - could not load (${err.message}); click to retry`;
+      }
+    }
+  }
 
   // ---------- volcanoes ----------
   // The Smithsonian GVP Holocene list ships in the page (its server sends no
