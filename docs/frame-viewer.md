@@ -45,8 +45,14 @@ current colormap) of perceptual (Viridis, Turbo,
 Batlow, ...), single hue (Blues, Greens, ...), multi hue (YlOrRd, YlGnBu, ...)
 and diverging (RdBu, Vik, Roma, ...), invert it, or fix its min / max; an empty
 range, or **Auto**, fits the frames shown again. Every swatch of a categorical
-legend is a colour picker — click one to recolour that category. **Reset all to
-default** puts colours, colormaps, ranges and opacities back.
+legend is a colour picker — click one to recolour that category. **Hide frames
+with no value** removes the frames the current colouring has nothing for: a
+category of *none*, *not collected* or *no GUNW*, a QA metric not read yet, or
+no acquisitions / interferograms / modes at all (zero duplicates or zero
+blackout months are values, and stay). It filters like the other filters, so
+the counts and charts follow, and it follows the colouring when that changes.
+**Reset all to default** puts colours, colormaps, ranges and opacities back, and
+shows every frame again.
 
 Clicking a frame opens the frame panel; drag its bottom-right corner to resize
 it, or use ⤢ to widen it (the map pans to keep it on screen). Its other parts: **Show granules** expands the granule
@@ -100,6 +106,9 @@ orbit type are also in every granule's CMR record, and RFI mitigation is the
 same for every granule of a product type and release, so a local rebuild shows
 those four for every granule; mixed mode and dithering wait for the download
 and read *not read* until then.
+
+Where each flag, QA metric and frame value comes from is listed in
+[Viewer data sources](data-sources.md).
 
 **QA metrics.** When the viewer is built with `--granule-qa`, the
 **Quality (QA)** group of **Color frames by** paints each frame by a metric from

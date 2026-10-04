@@ -394,6 +394,7 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
             "parseIntSet",
             "cycleFilter",
             "matchesArrayFilter",
+            "hasColorValue",
             "currentFiltered",
         ],
         "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'},"
@@ -402,7 +403,7 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
         " 'f-land': {checked: false}, 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
         " querySelector: () => ({value: 'all'})};"
-        " globalThis.product = 'gslc';"
+        " globalThis.product = 'gslc'; globalThis.hideEmpty = false;"
         " globalThis.activeChips = {gslcMode: new Set(), gslcPol: new Set(),"
         " gslcCrid: new Set()};"
         " globalThis.selected = new Map([['47_15', {}], ['47_16', {}]]);"
@@ -440,6 +441,7 @@ def test_rollout_filter_matches_any_option_and_none() -> None:
             "parseIntSet",
             "cycleFilter",
             "matchesArrayFilter",
+            "hasColorValue",
             "currentFiltered",
         ],
         "const state = {'f-track': {value: ''}, 'f-frame': {value: ''},"
@@ -448,7 +450,7 @@ def test_rollout_filter_matches_any_option_and_none() -> None:
         " 'f-land': {checked: false}, 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
         " querySelector: () => ({value: 'all'})};"
-        " globalThis.product = 'gslc';"
+        " globalThis.product = 'gslc'; globalThis.hideEmpty = false;"
         " globalThis.activeChips = {gslcMode: new Set(), gslcPol: new Set(),"
         " gslcCrid: new Set()};"
         " globalThis.selected = new Map();"
@@ -506,6 +508,51 @@ def test_flag_status_skips_flags_not_read_yet() -> None:
         " flagStatus(items.slice(1), 'd')];",
     )
     assert result == ["all", "some", "not collected"]
+
+
+def test_has_color_value_treats_none_unread_and_no_acquisitions_as_empty() -> None:
+    frames = json.dumps(
+        [
+            {
+                "cons_mode": "4005",
+                "_flag_m": "some",
+                "gslc_count_sel": 3,
+                "_qa": 0.4,
+                "n_duplicate_sel": 0,
+            },
+            {
+                "cons_mode": "none",
+                "_flag_m": "not collected",
+                "gslc_count_sel": 0,
+                "_qa": None,
+                "n_duplicate_sel": 0,
+            },
+        ]
+    )
+    result = run_js(
+        ["hasColorValue"],
+        "globalThis.COLOR_BY_FIELDS = {"
+        " cons_mode: {key: 'cons_mode', kind: 'cat'},"
+        " flag_m: {key: '_flag_m', kind: 'cat'},"
+        " gslc_count: {key: 'gslc_count_sel', kind: 'num'},"
+        " qa: {key: '_qa', kind: 'num'},"
+        " n_duplicate: {key: 'n_duplicate_sel', kind: 'num'}};"
+        " globalThis.EMPTY_CATS = new Set(['none', 'not collected', 'no GUNW',"
+        " 'undefined', 'null', '']);"
+        " globalThis.ZERO_IS_EMPTY = new Set(['gslc_count', 'gunw_count', 'n_modes']);"
+        f" const frames = {frames};"
+        " return ['cons_mode', 'flag_m', 'gslc_count', 'qa', 'n_duplicate']"
+        "   .map(k => frames.map(p => hasColorValue(p, k)));",
+    )
+    # zero duplicates is a value; zero acquisitions, none, not collected and an
+    # unread QA metric are not
+    assert result == [
+        [True, False],
+        [True, False],
+        [True, False],
+        [True, False],
+        [True, True],
+    ]
 
 
 def test_selection_counts_follow_chips_and_date_range() -> None:

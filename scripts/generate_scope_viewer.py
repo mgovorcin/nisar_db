@@ -1544,6 +1544,7 @@ BODY_HTML = r"""<body>
             <div class="cb-slider">Fill <input type="range" id="fill-opacity" min="0" max="100" value="32"><b><span id="opacity-val">32</span>%</b></div>
             <div class="cb-presets" id="sb-presets"></div>
             <div class="cb-slider">Outline <input type="range" id="outline-opacity" min="0" max="100" value="70"><b><span id="outline-val">70</span>%</b></div>
+            <div class="check-row"><input type="checkbox" id="sb-hide-empty"><label for="sb-hide-empty" style="margin:0;color:var(--text)">Hide frames with no value</label></div>
             <div id="colorby-legend" style="margin-top:6px;"></div>
             <button class="btn small" id="btn-reset-style" style="margin-top:8px;">Reset all to default</button>
           </div>
@@ -1686,6 +1687,7 @@ BODY_HTML = r"""<body>
         <div class="cb-slider">Fill <input type="range" id="cb-fill" min="0" max="100"><b id="cb-fill-val"></b></div>
         <div class="cb-presets" id="cb-presets"></div>
         <div class="cb-slider">Outline <input type="range" id="cb-outline" min="0" max="100"><b id="cb-outline-val"></b></div>
+        <div class="check-row"><input type="checkbox" id="cb-hide-empty"><label for="cb-hide-empty" style="margin:0;color:var(--text)">Hide frames with no value</label></div>
         <div id="cb-month-row" hidden><div class="month-chips" id="cb-months"></div></div>
         <div id="cb-style-controls" style="margin-top:6px;"></div>
         <button class="btn small" id="cb-reset" style="margin-top:8px;">Reset this option</button>
@@ -2545,6 +2547,26 @@ APP_JS = r"""
     return propArr.some(v => chipSet.has(v));
   }
 
+  // ---------- frames without a value for the colouring ----------
+  // "Hide frames with no value" (Style) drops the frames the current colouring
+  // has nothing to show for: a category of none / not collected / no GUNW, a
+  // number not read (QA), or no acquisitions at all. Zero duplicates or zero
+  // blackout months are values, and stay.
+  const EMPTY_CATS = new Set(["none", "not collected", "no GUNW", "undefined", "null", ""]);
+  const ZERO_IS_EMPTY = new Set(["gslc_count", "gunw_count", "n_modes"]);
+  let hideEmpty = false;
+  let filteredField = null;
+  function hasColorValue(p, field){
+    const def = COLOR_BY_FIELDS[field];
+    if (!def) return true;
+    const v = p[def.key];
+    if (def.kind === "num") {
+      if (v === null || v === undefined || v === "" || !Number.isFinite(Number(v))) return false;
+      return !(ZERO_IS_EMPTY.has(field) && Number(v) === 0);
+    }
+    return !EMPTY_CATS.has(String(v));
+  }
+
   function currentFiltered(opts){
     const ignoreRollout = !!(opts && opts.ignoreRollout);
     const trackSet = parseIntSet(document.getElementById("f-track").value);
@@ -2554,6 +2576,8 @@ APP_JS = r"""
     const passVal = document.querySelector('input[name="pass"]:checked').value;
     const calval = document.getElementById("f-calval").checked;
     const landOnly = document.getElementById("f-land").checked;
+    const colorSel = document.getElementById("color-by");
+    filteredField = colorSel ? colorSel.value : null;
     const selectedOnly = document.getElementById("f-selected-only").checked;
     return FRAME_DATA.features.filter(f=>{
       const p = f.properties;
@@ -2565,6 +2589,7 @@ APP_JS = r"""
       if (passVal !== "all" && p.passDirection !== passVal) return false;
       if (calval && !p.isCalVal) return false;
       if (landOnly && p.hasLand === false) return false;
+      if (hideEmpty && filteredField && !hasColorValue(p, filteredField)) return false;
       if (selectedOnly && !selected.has(p.id)) return false;
       if (!ignoreRollout && activeRollout.size) {
         const ro = asArray(p.rollout);
@@ -5558,6 +5583,9 @@ APP_JS = r"""
     };
     applyColorBy = function(){
       const field = document.getElementById("color-by").value;
+      // The hidden frames follow the colouring, so a new one re-filters first
+      // (which comes back here).
+      if (hideEmpty && field !== filteredField) { applyFilters(); return; }
       document.getElementById("bo-month-row").hidden = field !== "blackout_month";
       document.getElementById("colorby-scope").hidden = !SELECTION_FIELDS.has(field);
       paintFrames();
@@ -5569,13 +5597,20 @@ APP_JS = r"""
     document.getElementById("color-by").addEventListener("change", applyColorBy);
     document.getElementById("fill-opacity").addEventListener("input", e=> setFrameOpacity("fill", Number(e.target.value)));
     document.getElementById("outline-opacity").addEventListener("input", e=> setFrameOpacity("outline", Number(e.target.value)));
+    const setHideEmpty = on=>{
+      hideEmpty = on;
+      ["sb-hide-empty","cb-hide-empty"].forEach(id=>{ document.getElementById(id).checked = on; });
+      applyFilters();
+    };
+    ["sb-hide-empty","cb-hide-empty"].forEach(id=>
+      document.getElementById(id).addEventListener("change", e=> setHideEmpty(e.target.checked)));
     document.getElementById("btn-reset-style").addEventListener("click", ()=>{
       Object.keys(baseColorMapsCache).forEach(k=>delete baseColorMapsCache[k]);
       Object.keys(numStyle).forEach(k=>delete numStyle[k]);
       cmapPopOpen = false;
       document.getElementById("color-by").value = "gslc_count";
       frameStyle.fill = 32; frameStyle.outline = 70;
-      applyColorBy();
+      setHideEmpty(false);
     });
     syncColorByOptions();
     applyColorBy();
