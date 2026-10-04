@@ -231,6 +231,9 @@
   .eq-form select,.eq-form input{width:100%;margin:0;padding:2px 4px;font-size:11px;box-sizing:border-box;}
   .eq-dates{grid-column:1 / -1;display:flex;gap:4px;align-items:center;}
   .eq-dates[hidden]{display:none;}
+  .eq-color{display:flex;gap:4px;align-items:center;}
+  .eq-color input[type=color]{width:32px;flex-shrink:0;padding:0;height:22px;}
+  .eq-color input[hidden]{display:none;}
   .eq-legend{display:flex;flex-wrap:wrap;gap:3px 9px;margin-top:6px;font-size:10.5px;color:var(--text-dim);}
   .eq-legend i{display:inline-block;border-radius:50%;margin-right:3px;vertical-align:-1px;border:1px solid #fff;}
   #browse-card{position:absolute;left:10px;top:128px;z-index:5;width:360px;max-width:calc(100% - 20px);
@@ -710,6 +713,10 @@
         <label for="eq-area">Area</label>
         <select id="eq-area"><option value="page" selected>this page's area</option><option value="view">current map view</option>
           <option value="world">whole world</option></select>
+        <label for="eq-color">Colour by</label>
+        <div class="eq-color"><select id="eq-color"><option value="depth" selected>depth</option><option value="mag">magnitude</option>
+          <option value="age">age</option><option value="single">one colour</option></select>
+          <input type="color" id="eq-single" value="#e5484d" title="Marker colour" hidden></div>
       </div>
       <div class="bc-ctl"><button type="button" class="btn small primary" id="eq-apply">Show</button><span id="eq-status" class="tdim"></span></div>
       <div class="eq-legend" id="eq-legend"></div>
@@ -3297,16 +3304,41 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     }
     return q;
   }
+  // Marker colours: by depth (as USGS maps do), magnitude or age, or one
+  // colour. Each ramp is [value, colour] stops on its property.
+  const EQ_RAMPS = {
+    depth: {prop:"depth", stops: EQ_DEPTHS, label:(v, next)=> next == null ? `${v}+ km` : `${v}-${next} km`},
+    mag: {prop:"mag", stops: [[2.5,"#ffffb2"],[4,"#fecc5c"],[5,"#fd8d3c"],[6,"#f03b20"],[7,"#bd0026"]],
+          label:(v, next)=> next == null ? `M${v}+` : `M${v}-${next}`},
+    age: {prop:"age", stops: [[0,"#e5484d"],[1,"#ff8a4d"],[7,"#ffd24d"],[30,"#7ee787"],[365,"#4da3ff"],[1825,"#a389ff"]],
+          label:(v, next)=> next == null ? `${v}+ d old` : `${v}-${next} d`}
+  };
+  function eqColorExpr(){
+    const mode = document.getElementById("eq-color").value;
+    if (mode === "single") return document.getElementById("eq-single").value;
+    const ramp = EQ_RAMPS[mode];
+    const expr = ["interpolate", ["linear"], ["get", ramp.prop]];
+    ramp.stops.forEach(([v, c])=> expr.push(v, c));
+    return expr;
+  }
   function eqLegend(){
+    const mode = document.getElementById("eq-color").value;
+    const single = document.getElementById("eq-single").value;
     const sizes = [[3,"M3"],[5,"M5"],[7,"M7"]].map(([m, t])=>{
       // As drawn at zoom 5.
       const r = Math.round(eqRadius(m) * 2);
-      return `<span><i style="width:${r}px;height:${r}px;background:#888"></i>${t}</span>`;
+      return `<span><i style="width:${r}px;height:${r}px;background:${mode === "single" ? single : "#888"}"></i>${t}</span>`;
     }).join("");
-    const depths = EQ_DEPTHS.map(([d, c], i)=>
-      `<span><i style="width:9px;height:9px;background:${c}"></i>${i < EQ_DEPTHS.length - 1 ? `${d}-${EQ_DEPTHS[i+1][0]}` : `${d}+`} km</span>`).join("");
-    document.getElementById("eq-legend").innerHTML = sizes + depths;
-    document.getElementById("eq-legend-2").innerHTML = sizes + depths;
+    const ramp = EQ_RAMPS[mode];
+    const colors = ramp ? ramp.stops.map(([v, c], i)=>
+      `<span><i style="width:9px;height:9px;background:${c}"></i>${ramp.label(v, i < ramp.stops.length - 1 ? ramp.stops[i+1][0] : null)}</span>`).join("") : "";
+    document.getElementById("eq-legend").innerHTML = sizes + colors;
+    document.getElementById("eq-legend-2").innerHTML = sizes + colors;
+  }
+  function eqRecolor(){
+    document.getElementById("eq-single").hidden = document.getElementById("eq-color").value !== "single";
+    if (map.getLayer("quake-points")) map.setPaintProperty("quake-points", "circle-color", eqColorExpr());
+    eqLegend();
   }
   function eqDescribe(n){
     const period = document.getElementById("eq-period");
@@ -3325,15 +3357,13 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   function ensureQuakeLayer(){
     if (map.getSource("quakes")) return;
     map.addSource("quakes", {type:"geojson", data:{type:"FeatureCollection", features:[]}});
-    const color = ["interpolate", ["linear"], ["get", "depth"]];
-    EQ_DEPTHS.forEach(([d, c])=> color.push(d, c));
     map.addLayer({id:"quake-points", type:"circle", source:"quakes",
       layout:{"circle-sort-key": ["get", "mag"]},
       paint:{
         // Smaller over a whole continent, full size once zoomed in.
         "circle-radius": ["interpolate", ["linear"], ["zoom"],
           1, ["*", 0.55, EQ_RADIUS_EXPR], 5, EQ_RADIUS_EXPR, 9, ["*", 1.4, EQ_RADIUS_EXPR]],
-        "circle-color": color, "circle-opacity": 0.8,
+        "circle-color": eqColorExpr(), "circle-opacity": 0.8,
         "circle-stroke-color": "#ffffff", "circle-stroke-width": 0.6
       }});
     const tip = new maplibregl.Popup({closeButton:false, closeOnClick:false, offset:8});
@@ -3367,7 +3397,11 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       if (!r.ok) throw new Error((await r.text()).split("\n").find(l=>/Error|exceed|limit/i.test(l)) || `HTTP ${r.status}`);
       const j = await r.json();
       if (mine !== eqLoading) return;
-      j.features.forEach(f=>{ f.properties.depth = f.geometry.coordinates[2]; });
+      const now = Date.now();
+      j.features.forEach(f=>{
+        f.properties.depth = f.geometry.coordinates[2];
+        f.properties.age = (now - f.properties.time) / 86400000;   // days
+      });
       map.getSource("quakes").setData(j);
       eqLoaded = true;
       const n = j.features.length;
@@ -3391,6 +3425,8 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     }
   });
   document.getElementById("eq-apply").addEventListener("click", ()=>{ loadQuakes(); });
+  document.getElementById("eq-color").addEventListener("change", eqRecolor);
+  document.getElementById("eq-single").addEventListener("input", eqRecolor);
   eqLegend();
 
   function refreshSnowPanel(){

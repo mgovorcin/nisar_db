@@ -258,10 +258,12 @@ last year, in this page's area. The second click opens its panel:
 
 - **Minimum magnitude**;
 - **Period**: 7 days, 30 days, a year, 5 years, or two dates;
-- **Area**: this page's area, the current map view, or the whole world.
+- **Area**: this page's area, the current map view, or the whole world;
+- **Colour by**: depth (the default, as USGS maps draw it), magnitude, age, or
+  one colour of your choice; this recolours at once, with no new fetch.
 
-**Show** fetches again. Circles grow with magnitude and are coloured by depth,
-and clicking one gives its time, depth and a link to its USGS event page. USGS
+**Show** fetches again. Circles grow with magnitude, and clicking one gives its
+time, depth and a link to its USGS event page. USGS
 returns at most 20,000 events per request; the panel says when that cap was
 hit. The third click swaps the panel for a small legend: the query, the event
 count, magnitude sizes and depth colours. Its `x` hides just the legend. The
