@@ -1424,9 +1424,9 @@ BODY_HTML = r"""<body>
         <label class="srch-opt"><input type="radio" name="srch-scope" value="bbox">
           <div><b>Screen view</b><span id="srch-bbox">the frames in the map's current view</span></div></label>
         <label class="srch-opt"><input type="checkbox" id="srch-flags">
-          <div><b>Also collect missing granule flags</b><span>read from each product's metadata; slow for large areas</span></div></label>
+          <div><b>Also collect missing granule flags</b><span>from each QA_STATS.h5 with the QA metrics, about 75 granules a second</span></div></label>
         <label class="srch-opt"><input type="checkbox" id="srch-qa">
-          <div><b>Also collect missing QA metrics</b><span>from each QA_STATS.h5, about 25 granules a second</span></div></label>
+          <div><b>Also collect missing QA metrics</b><span>the same download, so either box fills both</span></div></label>
         <div class="bc-ctl"><button type="button" class="btn small primary" id="srch-go">Search &amp; rebuild</button>
           <a href="/" id="srch-home">back to the published view</a></div>
         <div class="stat-line">Searches CMR for GSLC and GUNW granules, builds the page on the QA helper and opens it.

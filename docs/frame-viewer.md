@@ -130,7 +130,8 @@ segments by one metric, so poor pairs stand out in the network. The tooltips,
 the frame popup's QA line and the CSV export carry the values.
 
 `scripts/collect_granule_qa.py` downloads the QA files into
-`catalog/granule_qa.json.gz`. The weekly build reads only new granules, and a
+`catalog/granule_qa.json.gz`, 48 at a time; with `--flags-output` it also fills
+a flag cache from the same files (all flags but the orbit type). The weekly build reads only new granules, and a
 granule withdrawn from the archive is cached as empty.
 
 **Browse and QA images.** Each row in the granule or interferogram list has a
@@ -207,8 +208,12 @@ next to the key. The first click opens its choices, and a second click (or
 | **Screen view** | the frames in the map's current view | seconds | small |
 
 Two boxes in the same panel also collect what the caches miss: **granule
-flags** (read from each product's metadata, about 5 granules a second) and **QA
-metrics** (each `QA_STATS.h5`, about 20 a second). Both are written to the
+flags** and **QA metrics**. Both come from one download of each granule's small
+`QA_STATS.h5`, about 75 granules a second (a globe of ~185,000 granules in
+about 40 minutes), so ticking either box fills both. The orbit type comes from
+the CMR search, and the RFI mitigation flag, which no small file records, is
+inherited from the granules of the same product type and release already read
+(one product read for a release not seen before). Both are written to the
 helper's cache, not the repository's, and need the Earthdata login in
 `~/.netrc`.
 

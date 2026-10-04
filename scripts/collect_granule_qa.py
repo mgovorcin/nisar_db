@@ -29,6 +29,21 @@ and a GSLC to
 
 A granule withdrawn from the archive is cached as an empty record.
 
+The same file also carries most of the granule flags that
+``collect_granule_flags.py`` reads from the multi-gigabyte product: its
+``identification`` group holds the joint observation, full frame, mixed mode
+and dithering flags. Given a flag cache to fill (``--flags-output``), each
+download fills both caches. The two flags the file lacks come from elsewhere:
+
+* ``o`` -- the orbit type, from the granule's CMR record, when the caller has
+  it (``build_local_view.py`` does; the CLI does not, and leaves it out);
+* ``r`` -- RFI mitigation, which no small file records. It is set per product
+  type and composite release (CRID) by the processing configuration, and the
+  flags read so far agree within every such group (all GSLC 0, all GUNW 1 at
+  P05023). It is inherited from the flags already cached for the group; for a
+  group not seen before, it is read from one product with
+  ``collect_granule_flags.read_flags`` and inherited by the rest.
+
 Means, medians and spreads are computed from the stored histograms. The QA
 software's own ``mean_value`` / ``sample_stddev`` come out near zero for some
 granules whose histograms are fine, so they are not used. The data area is the
@@ -50,18 +65,24 @@ from __future__ import annotations
 
 import argparse
 import io
+import netrc
+import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import get_context
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from collect_granule_flags import (
     COLLECTIONS,
-    _session,
+    _flag,
     _text,
     load_cache,
+    read_flags,
     save_cache,
     viewer_granule_ids,
 )
@@ -76,6 +97,41 @@ QA_URL = (
 )
 # Co-pol first: the unwrapped group of a dual-pol GUNW carries one of these.
 COPOLS = ("HH", "VV")
+
+# The downloads wait on the network, not the CPU, so threads in one process
+# do the work; the HDF5 parsing h5py serialises takes milliseconds per file.
+DEFAULT_WORKERS = 48
+# Throttling and passing server errors are retried with backoff, not counted
+# as failed granules.
+RETRY = Retry(
+    total=5,
+    backoff_factor=1.0,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=("GET",),
+    raise_on_status=False,
+)
+
+_LOCAL = threading.local()
+# Earthdata login cookies from the first download, so the other threads skip
+# the login round trip.
+_COOKIES: requests.cookies.RequestsCookieJar | None = None
+
+
+def _session() -> requests.Session:
+    # requests sessions are not thread-safe: one per thread, all sharing the
+    # login cookies once one thread has them.
+    session = getattr(_LOCAL, "session", None)
+    if session is None:
+        auth = netrc.netrc().authenticators("urs.earthdata.nasa.gov")
+        if auth is None:
+            raise RuntimeError("no urs.earthdata.nasa.gov entry in ~/.netrc")
+        session = requests.Session()
+        session.auth = (auth[0], auth[2] or "")
+        session.mount("https://", HTTPAdapter(max_retries=RETRY))
+        if _COOKIES is not None:
+            session.cookies.update(_COOKIES)
+        _LOCAL.session = session
+    return session
 
 
 def qa_url(gid: str) -> str:
@@ -177,8 +233,29 @@ def gslc_metrics(h5: h5py.File) -> dict:
     return {"rl": round(max(finite), 3)} if finite else {}
 
 
-def read_qa(gid: str) -> dict:
-    """Download one granule's ``QA_STATS.h5`` and read its metrics.
+def identification_flags(h5: h5py.File) -> dict[str, int]:
+    """Read the ``j f m d`` granule flags from a QA file's identification group.
+
+    A GUNW counts as a joint observation when either of its acquisitions is
+    one, as ``collect_granule_flags.read_flags`` counts it.
+    """
+    ident = h5["science/LSAR/identification"]
+    if "referenceIsJointObservation" in ident:
+        joint = _flag(ident["referenceIsJointObservation"]) | _flag(
+            ident["secondaryIsJointObservation"]
+        )
+    else:
+        joint = _flag(ident["isJointObservation"])
+    return {
+        "j": joint,
+        "f": _flag(ident["isFullFrame"]),
+        "m": _flag(ident["isMixedMode"]),
+        "d": _flag(ident["isDithered"]),
+    }
+
+
+def read_granule(gid: str) -> tuple[dict, dict | None]:
+    """Download one granule's ``QA_STATS.h5`` and read its metrics and flags.
 
     Parameters
     ----------
@@ -187,9 +264,12 @@ def read_qa(gid: str) -> dict:
 
     Returns
     -------
-    dict
+    qa : dict
         Metrics keyed as described in the module docstring, plus ``qv``; empty
         when the granule is no longer in the archive.
+    flags : dict or None
+        The ``j f m d`` flags of :func:`identification_flags`, or None when the
+        granule is no longer in the archive.
 
     """
     import h5py
@@ -198,58 +278,173 @@ def read_qa(gid: str) -> dict:
     # A product withdrawn from the archive takes its QA files with it; caching
     # it as empty stops every later run from asking again.
     if resp.status_code == 404:
-        return {}
+        return {}, None
     resp.raise_for_status()
     with h5py.File(io.BytesIO(resp.content)) as h5:
         out = gunw_metrics(h5) if "GUNW" in gid.split("_")[3] else gslc_metrics(h5)
         version = h5.get("science/LSAR/QA/processing/QASoftwareVersion")
         if version is not None:
             out["qv"] = _text(version)
-    return out
+        flags = identification_flags(h5)
+    return out, flags
 
 
-def _read_or_error(gid: str) -> dict | str:
-    # Runs in a worker process: an HTTP error can carry unpicklable response
-    # objects, so failures come back as text rather than as the exception.
+def read_qa(gid: str) -> dict:
+    """Download one granule's ``QA_STATS.h5`` and read its metrics."""
+    return read_granule(gid)[0]
+
+
+def release_group(gid: str) -> tuple[str, str]:
+    """Product type and composite release (CRID) of a granule.
+
+    Examples
+    --------
+    >>> release_group("NISAR_L2_PR_GSLC_031_155_D_084_4005_DHDH_A_20260928T231125_"
+    ...               "20260928T231159_P05023_N_F_J_001")
+    ('GSLC', 'P05023')
+
+    """
+    parts = gid.split("_")
+    return parts[3], parts[-5]
+
+
+def rfi_by_release(flags: dict[str, dict]) -> dict[tuple[str, str], int]:
+    """The RFI mitigation flag of each release group the cached flags agree on.
+
+    A group whose cached granules disagree is left out, so its granules are
+    read from their products rather than guessed.
+    """
+    seen: dict[tuple[str, str], set[int]] = {}
+    for gid, value in flags.items():
+        if "r" in value:
+            seen.setdefault(release_group(gid), set()).add(value["r"])
+    return {group: vals.pop() for group, vals in seen.items() if len(vals) == 1}
+
+
+def _read_or_error(gid: str) -> tuple[dict, dict | None] | str:
+    # An HTTP error can carry the signed download URL, so only the part before
+    # its query string is reported.
     try:
-        return read_qa(gid)
+        return read_granule(gid)
     except Exception as exc:  # noqa: BLE001 - one bad granule must not stop the run
         return f"{type(exc).__name__}: {str(exc).split('?', 1)[0]}"
+
+
+def _learn_rfi(
+    todo: list[str],
+    rfi: dict[tuple[str, str], int],
+    say: Callable[[str], None],
+) -> None:
+    # One product read for each release group the cached flags do not cover.
+    for group in dict.fromkeys(release_group(g) for g in todo):
+        if group in rfi:
+            continue
+        for gid in (g for g in todo if release_group(g) == group):
+            try:
+                rfi[group] = read_flags(gid)["r"]
+            except Exception as exc:  # noqa: BLE001 - try the group's next granule
+                say(f"  RFI flag of {gid}: {type(exc).__name__}")
+                continue
+            say(f"  RFI mitigation of {group[0]} {group[1]}: {rfi[group]}")
+            break
 
 
 def collect(
     ids: list[str],
     output: Path,
-    workers: int,
-    save_every: int = 500,
+    workers: int = DEFAULT_WORKERS,
+    save_every: int = 1000,
     progress: Callable[[str], None] | None = None,
+    flags_output: Path | None = None,
+    orbits: dict[str, str] | None = None,
+    known_flags: dict[str, dict] | None = None,
 ) -> None:
-    """Read the QA metrics of every granule in ``ids`` not already in ``output``."""
+    """Read the QA metrics (and flags) of the granules of ``ids`` not yet cached.
+
+    Parameters
+    ----------
+    ids : list of str
+        Granules to read.
+    output : Path
+        QA cache to create or extend.
+    workers : int
+        Downloads running at once.
+    save_every : int
+        Write the caches after this many granules.
+    progress : callable, optional
+        Called with a progress message; printed when not given.
+    flags_output : Path, optional
+        Flag cache to fill from the same downloads; a granule missing from
+        either cache is read.
+    orbits : dict, optional
+        Granule id to its orbit type (CMR's ``ORBIT_TYPE``), stored as ``o``.
+    known_flags : dict, optional
+        Flags cached elsewhere (the repository's), to learn the RFI mitigation
+        flag of each release group from.
+
+    """
     # Progress goes to stdout unless a caller (the viewer helper) takes it.
+    global _COOKIES
     say = progress or (lambda msg: print(msg, flush=True))
     qa = load_cache(output)
-    todo = [g for g in dict.fromkeys(ids) if g not in qa]
-    say(f"{len(qa)} cached, {len(todo)} to read with {workers} workers")
+    flags = load_cache(flags_output) if flags_output is not None else None
+    todo = [
+        g
+        for g in dict.fromkeys(ids)
+        if g not in qa or (flags is not None and g not in flags)
+    ]
+    say(f"{len(qa)} cached, {len(todo)} to read with {workers} threads")
+    if not todo:
+        return
+    rfi: dict[tuple[str, str], int] = {}
+    if flags is not None:
+        rfi = rfi_by_release({**(known_flags or {}), **flags})
+        _learn_rfi(todo, rfi, say)
+    orbits = orbits or {}
+
+    def store(gid: str, result: tuple[dict, dict | None]) -> None:
+        qa[gid], found = result
+        if flags is None or found is None:
+            return
+        value = {"j": found["j"], "f": found["f"]}
+        if gid in orbits:
+            value["o"] = orbits[gid]
+        if release_group(gid) in rfi:
+            value["r"] = rfi[release_group(gid)]
+        flags[gid] = {**value, "m": found["m"], "d": found["d"]}
+
+    def save() -> None:
+        save_cache(output, qa)
+        if flags is not None and flags_output is not None:
+            save_cache(flags_output, flags)
+
     failed: dict[str, str] = {}
+    # The first download logs in; the threads then start from its cookies.
+    first = _read_or_error(todo[0])
+    if isinstance(first, str):
+        failed[todo[0]] = first
+    else:
+        store(todo[0], first)
+        _COOKIES = _session().cookies
     t0 = time.time()
-    # Fresh worker processes rather than forked copies: a caller as large as
-    # the viewer helper after a global build would be copied into each one.
-    with ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool:
-        futures = {pool.submit(_read_or_error, gid): gid for gid in todo}
+    rest = todo[1:]
+    with ThreadPoolExecutor(workers) as pool:
+        futures = {pool.submit(_read_or_error, gid): gid for gid in rest}
         for n, fut in enumerate(as_completed(futures), 1):
             gid = futures[fut]
             result = fut.result()
             if isinstance(result, str):
                 failed[gid] = result
             else:
-                qa[gid] = result
-            if n % save_every == 0 or n == len(todo):
-                save_cache(output, qa)
+                store(gid, result)
+            if n % save_every == 0 or n == len(rest):
+                save()
                 rate = n / (time.time() - t0)
                 say(
-                    f"  {n}/{len(todo)} read, {len(failed)} failed, "
-                    f"{rate:.1f}/s, ~{(len(todo) - n) / rate / 60:.0f} min left"
+                    f"  {n + 1}/{len(todo)} read, {len(failed)} failed, "
+                    f"{rate:.1f}/s, ~{(len(rest) - n) / rate / 60:.0f} min left"
                 )
+    save()
     for gid, err in list(failed.items())[:20]:
         say(f"  failed {gid}: {err}")
     say(f"{len(qa)} granules in {output}; {len(failed)} failed (rerun to retry)")
@@ -271,7 +466,16 @@ def main(argv: list[str] | None = None) -> None:
         help="QA cache to create or extend.",
     )
     parser.add_argument(
-        "--workers", type=int, default=16, help="Worker processes reading at once."
+        "--flags-output",
+        type=Path,
+        default=None,
+        help="Flag cache to fill from the same files (no orbit type from the CLI).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help="Downloads running at once.",
     )
     parser.add_argument(
         "--limit", type=int, default=None, help="Read at most this many new granules."
@@ -282,7 +486,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.limit is not None:
         cached = load_cache(args.output)
         ids = [g for g in ids if g not in cached][: args.limit]
-    collect(ids, args.output, args.workers)
+    collect(ids, args.output, args.workers, flags_output=args.flags_output)
 
 
 if __name__ == "__main__":

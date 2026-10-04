@@ -111,6 +111,90 @@ def test_gslc_metrics_take_the_worst_rfi_likelihood(tmp_path: Path) -> None:
         assert qa.gslc_metrics(h5) == {}
 
 
+def test_identification_flags_read_the_qa_file(tmp_path: Path) -> None:
+    h5py = _h5py()
+    qa = _load("collect_granule_qa")
+    with h5py.File(tmp_path / "gslc.h5", "w") as h5:
+        ident = h5.create_group("science/LSAR/identification")
+        for name, value in (
+            ("isJointObservation", "True"),
+            ("isFullFrame", "False"),
+            ("isMixedMode", "False"),
+            ("isDithered", "True"),
+        ):
+            ident[name] = value
+        assert qa.identification_flags(h5) == {"j": 1, "f": 0, "m": 0, "d": 1}
+    with h5py.File(tmp_path / "gunw.h5", "w") as h5:
+        ident = h5.create_group("science/LSAR/identification")
+        ident["referenceIsJointObservation"] = "False"
+        ident["secondaryIsJointObservation"] = "True"
+        for name in ("isFullFrame", "isMixedMode", "isDithered"):
+            ident[name] = "True"
+        assert qa.identification_flags(h5) == {"j": 1, "f": 1, "m": 1, "d": 1}
+
+
+def test_rfi_flag_is_inherited_only_where_a_release_agrees() -> None:
+    qa = _load("collect_granule_qa")
+    other = GSLC.replace("P05023", "P05030")
+    flags = {
+        GSLC: {"r": 0},
+        GSLC.replace("_001", "_002"): {"r": 0},
+        GUNW: {"r": 1},
+        other: {"r": 0},
+        other.replace("_001", "_002"): {"r": 1},
+    }
+
+    assert qa.rfi_by_release(flags) == {("GSLC", "P05023"): 0, ("GUNW", "P05023"): 1}
+
+
+def test_collect_fills_both_caches_from_one_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    qa = _load("collect_granule_qa")
+    read: list[str] = []
+
+    def fake_read(gid: str) -> tuple[dict, dict | None]:
+        read.append(gid)
+        if gid.endswith("_009"):
+            return {}, None  # withdrawn from the archive
+        return {"rl": 0.5}, {"j": 0, "f": 1, "m": 0, "d": 1}
+
+    monkeypatch.setattr(qa, "read_granule", fake_read)
+    monkeypatch.setattr(qa, "_session", lambda: SimpleNamespace(cookies={}))
+    monkeypatch.setattr(qa, "read_flags", lambda _gid: {"r": 1})
+    gone = GSLC.replace("_001", "_009")
+    new_release = GUNW.replace("P05023", "P05030")
+    qa_out, flags_out = tmp_path / "qa.json.gz", tmp_path / "flags.json.gz"
+
+    qa.collect(
+        [GSLC, gone, new_release],
+        qa_out,
+        workers=2,
+        progress=lambda _: None,
+        flags_output=flags_out,
+        orbits={GSLC: "MOE"},
+        known_flags={GSLC.replace("_001", "_002"): {"r": 0}},
+    )
+
+    assert sorted(read) == sorted([GSLC, gone, new_release])
+    assert qa.load_cache(qa_out) == {
+        GSLC: {"rl": 0.5},
+        gone: {},
+        new_release: {"rl": 0.5},
+    }
+    assert qa.load_cache(flags_out) == {
+        GSLC: {"j": 0, "f": 1, "o": "MOE", "r": 0, "m": 0, "d": 1},
+        # An unseen release learns its RFI flag from one product read.
+        new_release: {"j": 0, "f": 1, "r": 1, "m": 0, "d": 1},
+    }
+    # Everything is cached now, so a rerun reads nothing.
+    read.clear()
+    qa.collect([GSLC], qa_out, progress=lambda _: None, flags_output=flags_out)
+    assert read == []
+
+
 def test_qa_url_points_next_to_the_product() -> None:
     url = _load("collect_granule_qa").qa_url(GUNW)
     assert url.endswith(f"NISAR_L2_GUNW_PROVISIONAL_V1/{GUNW}/{GUNW}_QA_STATS.h5")

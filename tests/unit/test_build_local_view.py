@@ -91,30 +91,35 @@ def test_build_requests_are_checked(tmp_path: Path) -> None:
     assert builds.page("../secrets") is None
 
 
-def test_merged_cache_collects_only_the_missing_granules(tmp_path: Path) -> None:
+def test_merged_cache_prefers_the_local_cache(tmp_path: Path) -> None:
     import gzip
     import json
 
     builder = _load("build_local_view")
     repo = tmp_path / "repo.json.gz"
-    with gzip.open(repo, "wt") as fh:
-        json.dump({"A": {"r": 1}}, fh)
     local = tmp_path / "local.json.gz"
-    asked: list[list[str]] = []
+    for path, value in (
+        (repo, {"A": {"r": 1}, "B": {"r": 1}}),
+        (local, {"B": {"r": 0}}),
+    ):
+        with gzip.open(path, "wt") as fh:
+            json.dump(value, fh)
 
-    def collector(ids, output, _workers, **_kwargs):
-        asked.append(list(ids))
-        with gzip.open(output, "wt") as fh:
-            json.dump({g: {"r": 0} for g in ids}, fh)
+    assert builder.merged_cache(repo, local) == {"A": {"r": 1}, "B": {"r": 0}}
+    assert builder.merged_cache(repo, tmp_path / "missing.json.gz") == {
+        "A": {"r": 1},
+        "B": {"r": 1},
+    }
 
-    merged = builder.merged_cache(
-        repo, local, ["A", "B", "B", "C"], collector, "flags", progress=lambda _: None
+
+def test_orbit_types_come_from_the_cmr_record() -> None:
+    product = SimpleNamespace(
+        name=GUNW,
+        metadata={"AdditionalAttributes": [{"Name": "ORBIT_TYPE", "Values": ["MOE"]}]},
     )
+    bare = SimpleNamespace(name="other", metadata={})
 
-    assert asked == [["B", "C"]]
-    assert merged == {"A": {"r": 1}, "B": {"r": 0}, "C": {"r": 0}}
-    # Without a collector the caches are only read.
-    assert builder.merged_cache(repo, local, ["Z"]) == merged
+    assert _load("build_local_view").orbit_types([product, bare]) == {GUNW: "MOE"}
 
 
 def _fake_build(lines: list[str], returncode: int) -> contextlib.nullcontext:
