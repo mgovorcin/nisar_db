@@ -251,6 +251,45 @@ bottom panel is open at a time.
   an August-November window instead: its peak rainy season, which DISP-S1
   blacks out the same way and the NISAR windows inherit.
 
+**Earthquakes.** The *seismogram* button above the globe toggle draws USGS
+earthquakes, fetched straight from the USGS FDSN event service, so it works on
+the published page too. The first click shows them: M4.5 and larger over the
+last year, in this page's area. The second click opens its panel:
+
+- **Minimum magnitude**;
+- **Period**: 7 days, 30 days, a year, 5 years, or two dates;
+- **Area**: this page's area, the current map view, or the whole world;
+- **Colour by**: depth (the default, as USGS maps draw it), magnitude, age, or
+  one colour of your choice; this recolours at once, with no new fetch.
+
+**Show** fetches again. Circles grow with magnitude, and clicking one gives its
+time, depth and a link to its USGS event page. USGS
+returns at most 20,000 events per request; the panel says when that cap was
+hit. The third click swaps the panel for a small legend: the query, the event
+count, magnitude sizes and colour key. Its `x` hides just the legend. The
+fourth click adds labels: magnitude over date beside each event. Overlapping
+labels are dropped, larger events first. The fifth click hides everything.
+
+**Volcanoes.** The *volcano* button steps through the same five clicks as
+the earthquakes: triangles, options, legend, labels (name and last eruption),
+off. The volcanoes are the Smithsonian Global Volcanism Program's Holocene list
+(about 1,200 worldwide). Its server sends no CORS header, so a trimmed copy
+ships in the page, refreshed by `scripts/make_volcano_list.py`. The current US
+alert levels and aviation colour codes come live from the USGS Volcano Hazards
+Program each time the layer first opens.
+
+The options panel offers:
+
+- **Erupted since**: any time in the Holocene, or a year;
+- **Area**: this page's area, the current view, or the world;
+- **Colour by**: USGS alert (the default), volcano type, last eruption, or one
+  colour;
+- **USGS-monitored only**.
+
+Clicking a volcano gives its type, country, last eruption, elevation and
+evidence, any USGS alert with its notice, and links to its GVP page and its
+USGS observatory page.
+
 **CRID.** The **Mode / Polarization / CRID** section also lists the composite
 release IDs (`P05023`, ...) read from the granule names. Selecting some narrows
 the map to frames with granules from those releases and recounts the colourings
