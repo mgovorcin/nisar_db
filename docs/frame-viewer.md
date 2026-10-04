@@ -155,7 +155,20 @@ with Earthdata, keeps them in memory until it stops, and sends them only to
 Earthdata's login host. The page never stores the password.
 
 The key's dot shows the helper's state: green when it is connected with a
-login, yellow when it is connected without one, grey when it is not running. A
+login, yellow when it is connected without one, grey when the page cannot
+reach it. Its panel says where the login comes from. On start the helper also
+prints `Earthdata login: found in ~/.netrc` (or that it found none), and
+`curl http://127.0.0.1:8797/health` reports it as `"auth": "netrc"`.
+
+**Open the viewer from the helper.** The helper also serves the viewer at
+`http://127.0.0.1:8797/`. Opened there, the page and the helper share one
+address, so the browser has nothing to block. From the published page, Chrome
+asks before a public site may reach a program on your computer ("local network
+access"), and may refuse it. Allow it from the lock icon's site settings, or
+use the helper's address instead. When the browser runs on another computer
+than the helper (a laptop viewing a server), forward the port first, e.g.
+`ssh -L 8797:127.0.0.1:8797 <server>` (VS Code's port forwarding does the same),
+and open `http://127.0.0.1:8797/` on the laptop. A
 web page cannot send an Earthdata login to ASF itself, because ASF's download
 endpoint refuses that cross-origin request, so the login has to sit with the
 helper.

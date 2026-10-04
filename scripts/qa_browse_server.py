@@ -18,9 +18,18 @@ It also reads the grid corners of the product (a few small byte-range reads),
 so the viewer can place the images, and the public ``_LATLON`` browse, on the
 map.
 
+It also serves the viewer itself at ``http://127.0.0.1:<port>/`` (the
+published page, or ``--viewer-html``). Opened from there, page and helper share
+one origin, so no browser rule stands between them: Chrome otherwise asks for
+"local network access" before a public site may reach a program on this
+computer, and may refuse it. When the browser runs on another computer than
+the helper (a laptop viewing a server), forward the port, e.g.
+``ssh -L 8797:127.0.0.1:8797 <server>``, and open the same address there.
+
 Endpoints (all JSON or PNG, with permissive CORS so the published viewer can
 call it):
 
+* ``/`` -- the viewer, served from this helper;
 * ``/health`` -- liveness check, and where the login comes from (``auth``:
   ``netrc``, ``page`` or ``none``);
 * ``POST /login`` -- ``{"username": ..., "password": ...}`` from the viewer;
@@ -46,6 +55,7 @@ import netrc
 import os
 import re
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -92,6 +102,12 @@ VALID_CC_COLOR = (77, 210, 201, 255)
 
 
 URS_HOST = "urs.earthdata.nasa.gov"
+PUBLISHED_VIEWER = (
+    "https://opera-adt.github.io/nisar_db/assets/opera_nisar_db_viewer.html"
+)
+# Tells the page it came from the helper, so it calls the helper on its own
+# origin rather than on the default address.
+SAME_ORIGIN_MARK = '<meta name="nisar-qa-helper" content="same-origin">'
 # Read-only, and answers 401 to a wrong username or password.
 URS_CHECK_URL = f"https://{URS_HOST}/api/users/tokens"
 
@@ -404,7 +420,40 @@ class QaCache:
         return json.loads(path.read_text())
 
 
-def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
+class ViewerPage:
+    """The viewer page the helper serves: a local file, or the published page.
+
+    The published page is fetched again at most every ``ttl`` seconds, so a
+    long-running helper follows the weekly rebuild.
+    """
+
+    def __init__(self, source: str, ttl: float = 600.0) -> None:
+        self.source = source
+        self.ttl = ttl
+        self._html: bytes | None = None
+        self._at = 0.0
+        self._lock = threading.Lock()
+
+    def html(self) -> bytes:
+        """Return the page, marked as served by the helper."""
+        with self._lock:
+            if self._html is None or time.time() - self._at > self.ttl:
+                if self.source.startswith(("http://", "https://")):
+                    resp = requests.get(self.source, timeout=60)
+                    resp.raise_for_status()
+                    text = resp.text
+                else:
+                    text = Path(self.source).read_text()
+                self._html = text.replace(
+                    "<head>", f"<head>{SAME_ORIGIN_MARK}", 1
+                ).encode()
+                self._at = time.time()
+            return self._html
+
+
+def make_handler(
+    cache: QaCache, viewer: ViewerPage | None = None
+) -> type[BaseHTTPRequestHandler]:
     """Build the request handler bound to ``cache``."""
 
     class Handler(BaseHTTPRequestHandler):
@@ -438,7 +487,11 @@ def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
             url = urlparse(self.path)
             parts = [p for p in url.path.split("/") if p]
             try:
-                if parts == ["health"]:
+                if parts in ([], ["index.html"]) and viewer is not None:
+                    body = viewer.html()
+                    self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(body))
+                    self.wfile.write(body)
+                elif parts == ["health"]:
                     self._json(
                         {
                             "ok": True,
@@ -537,18 +590,32 @@ def main(argv: list[str] | None = None) -> None:
         default=Path.home() / ".cache" / "nisar_db" / "qa_browse",
         help="Where extracted images and corners are kept.",
     )
+    parser.add_argument(
+        "--viewer-html",
+        default=PUBLISHED_VIEWER,
+        help="Viewer page to serve at / (a file, or a URL; default: the published one).",
+    )
     args = parser.parse_args(argv)
     args.cache_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer(
         ("127.0.0.1", args.port),
-        make_handler(QaCache(args.cache_dir, EarthdataAuth())),
+        make_handler(
+            QaCache(args.cache_dir, EarthdataAuth()), ViewerPage(args.viewer_html)
+        ),
     )
-    print(f"Serving QA images on http://127.0.0.1:{args.port} (cache {args.cache_dir})")
+    print(
+        f"QA helper on http://127.0.0.1:{args.port} (cache {args.cache_dir})",
+        flush=True,
+    )
+    print(f"Open the viewer at http://127.0.0.1:{args.port}/", flush=True)
     source = EarthdataAuth().source
     print(
-        "Earthdata login: ~/.netrc"
-        if source == "netrc"
-        else "No Earthdata login in ~/.netrc: log in from the viewer's key icon"
+        (
+            "Earthdata login: found in ~/.netrc"
+            if source == "netrc"
+            else "No Earthdata login in ~/.netrc: log in from the viewer's key icon"
+        ),
+        flush=True,
     )
     server.serve_forever()
 

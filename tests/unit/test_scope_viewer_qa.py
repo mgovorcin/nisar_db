@@ -235,3 +235,13 @@ def test_earthdata_auth_rejects_a_wrong_password(
     with pytest.raises(PermissionError):
         auth.login("me", "wrong")
     assert auth._page is None
+
+
+def test_viewer_page_is_marked_as_served_by_the_helper(tmp_path: Path) -> None:
+    helper = _load("qa_browse_server")
+    page = tmp_path / "viewer.html"
+    page.write_text("<!DOCTYPE html>\n<html><head>\n<title>v</title></head></html>")
+
+    html = helper.ViewerPage(str(page)).html().decode()
+
+    assert html.startswith(f"<!DOCTYPE html>\n<html><head>{helper.SAME_ORIGIN_MARK}")
