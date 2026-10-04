@@ -489,6 +489,11 @@ def summarize_frame(group: pd.DataFrame) -> dict:
         .rename(columns={"granule_id": "gid", "coverage": "cov", "polarization": "pol"})
         .to_dict("records")
     )
+    # The catalog reads the cycle as text ("024") to keep its zero padding; the
+    # viewer compares it as a number.
+    for g in granules:
+        if str(g["cycle"]).isdigit():
+            g["cycle"] = int(g["cycle"])
     # A pass split into several granules of the same mode -- partial segments of
     # one acquisition -- lands on a single point of the timeline chart, so the
     # granule count overstates how many acquisitions a frame really has.
@@ -1659,7 +1664,8 @@ APP_JS = r"""
   FRAME_DATA.features.forEach(f=>{
     const p = f.properties;
     const granules = Array.isArray(p.granules) ? p.granules : [];
-    granules.forEach(g=>{ g.crid = cridOf(g.gid, 13); });
+    // Pages built from the CMR catalog stored the cycle as text ("024").
+    granules.forEach(g=>{ g.crid = cridOf(g.gid, 13); g.cycle = parseInt(g.cycle, 10); });
     p.gslc_crids = uniqSorted(granules.map(g=>g.crid).filter(Boolean));
     p.gslc_cycles = Array.from(new Set(granules.map(g=>g.cycle).filter(Number.isFinite)));
     const ifgs = asArray(p.gunw_ifgs);
