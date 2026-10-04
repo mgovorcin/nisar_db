@@ -6,8 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
-import h5py
 import numpy as np
 import pytest
 
@@ -34,7 +34,12 @@ def _load(name: str) -> ModuleType:
     return module
 
 
-def _histogram(group: h5py.Group, edges: np.ndarray, density: np.ndarray) -> None:
+def _h5py() -> Any:
+    # Only the QA readers need h5py, which the CI test environment lacks.
+    return pytest.importorskip("h5py")
+
+
+def _histogram(group: Any, edges: np.ndarray, density: np.ndarray) -> None:
     group["histogramBins"] = edges
     group["histogramDensity"] = density
 
@@ -54,6 +59,7 @@ def test_hist_stats_reads_the_median_inside_its_bin() -> None:
 
 
 def test_gunw_metrics_scale_coverage_to_the_data_area(tmp_path: Path) -> None:
+    h5py = _h5py()
     qa = _load("collect_granule_qa")
     path = tmp_path / "qa.h5"
     with h5py.File(path, "w") as h5:
@@ -94,6 +100,7 @@ def test_gunw_metrics_scale_coverage_to_the_data_area(tmp_path: Path) -> None:
 
 
 def test_gslc_metrics_take_the_worst_rfi_likelihood(tmp_path: Path) -> None:
+    h5py = _h5py()
     qa = _load("collect_granule_qa")
     with h5py.File(tmp_path / "qa.h5", "w") as h5:
         h5["science/LSAR/RFI/data/frequencyA/HH/rfiLikelihood"] = 0.2
