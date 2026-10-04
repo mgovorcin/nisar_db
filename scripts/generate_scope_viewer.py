@@ -4536,19 +4536,36 @@ APP_JS = r"""
   function ensureVolcanoLayer(){
     if (voReady) return;
     voReady = true;
-    // A white triangle drawn once; as an SDF image it takes any icon colour.
-    const size = 32, c = document.createElement("canvas");
-    c.width = c.height = size;
-    const ctx = c.getContext("2d");
-    ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.moveTo(size / 2, 3); ctx.lineTo(size - 3, size - 4); ctx.lineTo(3, size - 4); ctx.closePath(); ctx.fill();
-    map.addImage("volcano-tri", ctx.getImageData(0, 0, size, size), {sdf: true});
+    // A triangle as a signed distance field, so MapLibre can colour it with
+    // any icon colour and draw a halo. A plain filled shape would be read as
+    // distances too and render soft and washed out; here the edge sits at
+    // 0.75, solid two pixels inside and fading out over six pixels outside.
+    const size = 48, ratio = 2;
+    const tri = [[size / 2, 9], [size - 7, size - 10], [7, size - 10]];
+    const segDist = (px, py, [ax, ay], [bx, by])=>{
+      const dx = bx - ax, dy = by - ay;
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+      return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+    };
+    const side = (px, py, [ax, ay], [bx, by])=> (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+    const sdf = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      const s0 = side(px, py, tri[0], tri[1]), s1 = side(px, py, tri[1], tri[2]), s2 = side(px, py, tri[2], tri[0]);
+      const inside = (s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0);
+      const d = Math.min(segDist(px, py, tri[0], tri[1]), segDist(px, py, tri[1], tri[2]), segDist(px, py, tri[2], tri[0]));
+      const v = Math.max(0, Math.min(1, inside ? 0.75 + d / 8 : 0.75 - d / 8));
+      const i = (y * size + x) * 4;
+      sdf[i] = sdf[i + 1] = sdf[i + 2] = 255;
+      sdf[i + 3] = Math.round(v * 255);
+    }
+    map.addImage("volcano-tri", {width: size, height: size, data: sdf}, {sdf: true, pixelRatio: ratio});
     map.addSource("volcanoes", {type:"geojson", data: voData()});
     map.addLayer({id:"volcano-points", type:"symbol", source:"volcanoes", filter: voFilter(),
       layout:{"icon-image":"volcano-tri", "icon-allow-overlap": true,
-              "icon-size": ["interpolate", ["linear"], ["zoom"], 1, 0.32, 5, 0.5, 9, 0.75],
+              "icon-size": ["interpolate", ["linear"], ["zoom"], 1, 0.55, 5, 0.8, 9, 1.15],
               "symbol-sort-key": ["get", "yy"]},
-      paint:{"icon-color": voColorExpr(), "icon-halo-color": "#1a1a1a", "icon-halo-width": 1.2}});
+      paint:{"icon-color": voColorExpr(), "icon-halo-color": "#1a1a1a", "icon-halo-width": 1, "icon-halo-blur": 0}});
     map.addLayer({id:"volcano-labels", type:"symbol", source:"volcanoes", filter: voFilter(),
       layout:{visibility:"none", "symbol-sort-key": ["-", 0, ["get", "yy"]],
         "text-field": ["format", ["get", "n"], {}, "\n", {},
