@@ -2916,6 +2916,9 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   // ---------- map ----------
   const style = {
     version: 8,
+    // Fonts for map labels (the earthquake labels); fetched only when a label
+    // layer is first drawn.
+    glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
     projection: {type: "globe"},   // read at style load; the GlobeControl toggles from here
     sources: {
       "esri-light": { type:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"], tileSize:256, maxzoom:16, attribution:"Esri, HERE, Garmin, &copy; OpenStreetMap contributors" },
@@ -2987,9 +2990,9 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
         btn.type = "button"; btn.className = "overlay-btn"; btn.title = title;
         btn.setAttribute("aria-label", title);
         btn.innerHTML = svg;
-        // Earthquakes step through events, options, legend, off; the others
-        // through layer, panel, off.
-        btn.addEventListener("click", ()=> setOverlay(key, (overlayState[key] + 1) % (key === "quake" ? 4 : 3)));
+        // Earthquakes step through events, options, legend, labels, off; the
+        // others through layer, panel, off.
+        btn.addEventListener("click", ()=> setOverlay(key, (overlayState[key] + 1) % (key === "quake" ? 5 : 3)));
         overlayButtons[key] = btn;
         this._wrap.appendChild(btn);
         return this._wrap;
@@ -3240,10 +3243,11 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     document.getElementById(`${key}-panel`).hidden = level < 2;
     if (key === "quake") {
       showQuakes(on);
-      if (btn) btn.title = `${btn.getAttribute("aria-label")} - ${["off","events shown","options open","legend shown"][level]}; `+
-        `click for ${["events","options","legend","off"][level]}`;
+      if (btn) btn.title = `${btn.getAttribute("aria-label")} - ${["off","events shown","options open","legend shown","labels shown"][level]}; `+
+        `click for ${["events","options","legend","labels","off"][level]}`;
       document.getElementById("quake-panel").hidden = level !== 2;
-      document.getElementById("quakeleg-panel").hidden = level !== 3;
+      document.getElementById("quakeleg-panel").hidden = level < 3;
+      if (map.getLayer("quake-labels")) map.setLayoutProperty("quake-labels", "visibility", level === 4 ? "visible" : "none");
       layoutPanels();
       return;
     }
@@ -3366,6 +3370,22 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
         "circle-color": eqColorExpr(), "circle-opacity": 0.8,
         "circle-stroke-color": "#ffffff", "circle-stroke-width": 0.6
       }});
+    // Magnitude over date beside each circle; MapLibre drops the ones that
+    // would collide, so a dense cluster stays readable.
+    map.addLayer({id:"quake-labels", type:"symbol", source:"quakes",
+      layout:{
+        visibility: "none",
+        "symbol-sort-key": ["-", 10, ["get", "mag"]],
+        "text-field": ["format",
+          ["concat", "M", ["number-format", ["get", "mag"], {"min-fraction-digits": 1, "max-fraction-digits": 1}]], {},
+          "\n", {}, ["get", "day"], {"font-scale": 0.8}],
+        "text-font": ["Open Sans Semibold"],
+        "text-size": 11,
+        "text-variable-anchor": ["left", "right", "top", "bottom"],
+        "text-radial-offset": 0.9,
+        "text-justify": "auto"
+      },
+      paint:{"text-color": "#1a1a1a", "text-halo-color": "#ffffff", "text-halo-width": 1.4}});
     const tip = new maplibregl.Popup({closeButton:false, closeOnClick:false, offset:8});
     const html = f=>{
       const p = f.properties;
@@ -3401,6 +3421,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       j.features.forEach(f=>{
         f.properties.depth = f.geometry.coordinates[2];
         f.properties.age = (now - f.properties.time) / 86400000;   // days
+        f.properties.day = new Date(f.properties.time).toISOString().slice(0, 10);
       });
       map.getSource("quakes").setData(j);
       eqLoaded = true;
