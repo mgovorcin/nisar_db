@@ -53,6 +53,7 @@ Start it, then open the viewer (local or published) in Chrome, Edge or Firefox::
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import json
 import netrc
@@ -445,6 +446,11 @@ class ViewerPage:
             return float(int(time.time() // self.ttl))
         return Path(self.source).stat().st_mtime
 
+    @property
+    def etag(self) -> str:
+        """An ETag for the page version last returned by :meth:`html`."""
+        return f'"viewer-{self._stamp}"'
+
     def html(self) -> bytes:
         """Return the page, marked as served by the helper."""
         with self._lock:
@@ -465,6 +471,20 @@ class ViewerPage:
 
 VIEW_ID = re.compile(r"^[a-z]+-[0-9TZ]+$")
 
+# Pages are 10-70 MB of mostly JSON and compress about six-fold, which is what
+# makes them load quickly through an SSH or VS Code port forward. One
+# compressed copy is kept per page version.
+_GZIP_CACHE: dict[str, bytes] = {}
+
+
+def gzipped(key: str, body: bytes) -> bytes:
+    """Return ``body`` gzip-compressed, cached under ``key``."""
+    if key not in _GZIP_CACHE:
+        if len(_GZIP_CACHE) >= 8:
+            _GZIP_CACHE.pop(next(iter(_GZIP_CACHE)))
+        _GZIP_CACHE[key] = gzip.compress(body, compresslevel=5)
+    return _GZIP_CACHE[key]
+
 
 class ViewBuilds:
     """Rebuilds of the viewer for another scope, one at a time.
@@ -484,7 +504,13 @@ class ViewBuilds:
         with self._lock:
             return dict(self._job) if self._job else {"state": "idle"}
 
-    def start(self, scope: str, bbox: list[float] | None) -> dict:
+    def start(
+        self,
+        scope: str,
+        bbox: list[float] | None,
+        collect_flags: bool = False,
+        collect_qa: bool = False,
+    ) -> dict:
         """Start a build unless one is running; return its status.
 
         Raises
@@ -495,6 +521,12 @@ class ViewBuilds:
         """
         if scope not in ("na", "globe", "bbox"):
             raise ValueError(f"unknown scope {scope!r}")
+        # The collectors read with their own worker processes, which log in
+        # from the netrc file, not from a login handed over by the page.
+        if (collect_flags or collect_qa) and EarthdataAuth._netrc_login() is None:
+            raise ValueError(
+                "collecting flags or QA metrics needs an Earthdata login in ~/.netrc"
+            )
         if scope == "bbox":
             if bbox is None or len(bbox) != 4:
                 raise ValueError("the bbox scope needs [west, south, east, north]")
@@ -510,6 +542,8 @@ class ViewBuilds:
                 "id": f"{scope}-{stamp}",
                 "scope": scope,
                 "bbox": bbox if scope == "bbox" else None,
+                "collect_flags": bool(collect_flags),
+                "collect_qa": bool(collect_qa),
                 "state": "running",
                 "step": "Starting",
                 "started": time.time(),
@@ -540,6 +574,9 @@ class ViewBuilds:
                 Path(gpkg),
                 tuple(job["bbox"]) if job["bbox"] else None,
                 progress=lambda msg: self._update(step=msg),
+                collect_flags=job["collect_flags"],
+                collect_qa=job["collect_qa"],
+                cache_dir=self.root.parent,
             )
             self._update(
                 state="done",
@@ -581,6 +618,27 @@ def make_handler(
             self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
             self.end_headers()
 
+        def _page(self, body: bytes, etag: str) -> None:
+            # A reload revalidates instead of downloading an unchanged page.
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+            gz = "gzip" in (self.headers.get("Accept-Encoding") or "")
+            data = gzipped(etag, body) if gz else body
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            if gz:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+
         def _json(self, payload: object, status: int = HTTPStatus.OK) -> None:
             body = json.dumps(payload).encode()
             self._headers(status, "application/json", len(body))
@@ -600,15 +658,14 @@ def make_handler(
             try:
                 if parts in ([], ["index.html"]) and viewer is not None:
                     body = viewer.html()
-                    self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(body))
-                    self.wfile.write(body)
+                    self._page(body, viewer.etag)
                 elif len(parts) == 2 and parts[0] == "view" and builds is not None:
                     page = builds.page(parts[1])
                     if page is None:
                         self._json({"error": "no such view"}, HTTPStatus.NOT_FOUND)
                         return
-                    self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(page))
-                    self.wfile.write(page)
+                    # A built view never changes, so its id is its version.
+                    self._page(page, f'"{parts[1]}"')
                 elif parts == ["build"] and builds is not None:
                     self._json(builds.status())
                 elif parts == ["health"]:
@@ -664,7 +721,12 @@ def make_handler(
                 try:
                     body = json.loads(self.rfile.read(length) or b"{}")
                     self._json(
-                        builds.start(str(body.get("scope", "na")), body.get("bbox"))
+                        builds.start(
+                            str(body.get("scope", "na")),
+                            body.get("bbox"),
+                            collect_flags=bool(body.get("flags")),
+                            collect_qa=bool(body.get("qa")),
+                        )
                     )
                 except (ValueError, TypeError) as exc:
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

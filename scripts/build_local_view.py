@@ -13,7 +13,11 @@ Frames keep the ``frame_idx`` OPERA uses (the TrackFrame database's row index),
 so a North American frame has the same number in every scope. GSLC and GUNW
 granules come from one CMR search each (the whole archive, or the box); blackout
 dates, granule flags and QA metrics are attached from the repo's caches where
-they cover a frame or granule. The consistent mode is computed from the catalog.
+they cover a frame or granule; on request, the flags and QA metrics of granules
+the caches miss are collected first (``collect_granule_flags.py`` /
+``collect_granule_qa.py``, Earthdata login in ``~/.netrc``) into local caches
+beside the page, so the repo's own caches are left untouched. The consistent
+mode is computed from the catalog.
 
 ``scripts/qa_browse_server.py`` runs it when the viewer's search button asks;
 it can also be run by hand::
@@ -150,12 +154,74 @@ def search_gunw(bbox: tuple[float, ...] | None) -> pd.DataFrame:
     return gunw_rows([p.name for p in products])
 
 
+def merged_cache(
+    repo_cache: Path,
+    local_cache: Path | None,
+    ids: list[str],
+    collector: Callable[..., None] | None = None,
+    label: str = "",
+    progress: Callable[[str], None] = print,
+    workers: int = 16,
+) -> dict[str, dict]:
+    """Read a per-granule cache, the repo's merged with a local one.
+
+    Parameters
+    ----------
+    repo_cache : Path
+        The cache kept in the repository (flags or QA metrics).
+    local_cache : Path or None
+        A cache beside the built pages that collection writes to.
+    ids : list of str
+        The granules of this view.
+    collector : callable, optional
+        ``collect(ids, output, workers, progress=...)`` from
+        ``collect_granule_flags`` or ``collect_granule_qa``. When given, the
+        granules of ``ids`` neither cache holds are read into ``local_cache``
+        first.
+    label : str
+        What is collected, for the progress messages.
+    progress : callable
+        Called with a short message as collection advances.
+    workers : int
+        Worker processes reading at once.
+
+    Returns
+    -------
+    dict
+        Granule id to its flags or QA metrics.
+
+    """
+    cache = gen.load_granule_flags(repo_cache) if repo_cache.exists() else {}
+    if local_cache is not None and local_cache.exists():
+        cache.update(gen.load_granule_flags(local_cache))
+    if collector is None:
+        return cache
+    if local_cache is None:
+        raise ValueError("collecting needs a local cache to write to")
+    missing = [g for g in dict.fromkeys(ids) if g not in cache]
+    if not missing:
+        progress(f"All {label} already cached")
+        return cache
+    progress(f"Collecting {label} for {len(missing):,} granules")
+    collector(
+        missing,
+        local_cache,
+        workers,
+        progress=lambda m: progress(f"{label}: {m.strip()}"),
+    )
+    cache.update(gen.load_granule_flags(local_cache))
+    return cache
+
+
 def build_view(
     scope: str,
     output: Path,
     trackframe_gpkg: Path,
     bbox: tuple[float, ...] | None = None,
     progress: Callable[[str], None] = print,
+    collect_flags: bool = False,
+    collect_qa: bool = False,
+    cache_dir: Path | None = None,
 ) -> dict:
     """Search CMR, build the frame data for ``scope`` and write the page.
 
@@ -171,6 +237,11 @@ def build_view(
         ``west, south, east, north`` for the ``bbox`` scope.
     progress : callable
         Called with a short message as each step starts.
+    collect_flags, collect_qa : bool
+        Read the granule flags / QA metrics the caches miss before building
+        (needs ``~/.netrc`` and ``cache_dir``).
+    cache_dir : Path, optional
+        Where the local flag and QA caches live.
 
     Returns
     -------
@@ -195,6 +266,34 @@ def build_view(
     progress(f"Searching CMR for GUNW granules ({len(catalog)} GSLC found)")
     gunw = search_gunw(search_box)
 
+    ids = list(catalog["granule_id"]) + list(gunw["granule_id"])
+    local = Path(cache_dir) if cache_dir is not None else None
+    flags_collector: Callable[..., None] | None = None
+    qa_collector: Callable[..., None] | None = None
+    if collect_flags:
+        from collect_granule_flags import collect
+
+        flags_collector = collect
+    if collect_qa:
+        from collect_granule_qa import collect as collect_qa_metrics
+
+        qa_collector = collect_qa_metrics
+    flags = merged_cache(
+        GRANULE_FLAGS,
+        local / "granule_flags.json.gz" if local else None,
+        ids,
+        flags_collector,
+        "flags",
+        progress,
+    )
+    qa = merged_cache(
+        GRANULE_QA,
+        local / "granule_qa.json.gz" if local else None,
+        ids,
+        qa_collector,
+        "QA metrics",
+        progress,
+    )
     progress(f"Building {len(gdf)} frames ({len(gunw)} GUNW found)")
     blackout = (
         gen.load_period_json(BLACKOUT_JSON, "blackout_dates", "data")
@@ -202,16 +301,8 @@ def build_view(
         else None
     )
     frame_data = gen.build_frame_data(gdf, catalog, None, blackout, None, gunw=gunw)
-    n_flagged = (
-        gen.attach_granule_flags(frame_data, gen.load_granule_flags(GRANULE_FLAGS))
-        if GRANULE_FLAGS.exists()
-        else 0
-    )
-    n_qa = (
-        gen.attach_granule_qa(frame_data, gen.load_granule_flags(GRANULE_QA))
-        if GRANULE_QA.exists()
-        else 0
-    )
+    n_flagged = gen.attach_granule_flags(frame_data, flags) if flags else 0
+    n_qa = gen.attach_granule_qa(frame_data, qa) if qa else 0
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     n_with = sum(1 for f in frame_data["features"] if f["properties"]["gslc_count"])

@@ -39,6 +39,7 @@ import json
 import netrc
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -198,11 +199,19 @@ def save_cache(path: Path, flags: dict[str, dict]) -> None:
     tmp.replace(path)
 
 
-def collect(ids: list[str], output: Path, workers: int, save_every: int = 200) -> None:
+def collect(
+    ids: list[str],
+    output: Path,
+    workers: int,
+    save_every: int = 200,
+    progress: Callable[[str], None] | None = None,
+) -> None:
     """Read the flags of every granule in ``ids`` not already in ``output``."""
+    # Progress goes to stdout unless a caller (the viewer helper) takes it.
+    say = progress or (lambda msg: print(msg, flush=True))
     flags = load_cache(output)
     todo = [g for g in dict.fromkeys(ids) if g not in flags]
-    print(f"{len(flags)} cached, {len(todo)} to read with {workers} workers")
+    say(f"{len(flags)} cached, {len(todo)} to read with {workers} workers")
     failed: dict[str, str] = {}
     t0 = time.time()
     # h5py serialises every HDF5 call behind one lock, so remote reads only run
@@ -219,14 +228,13 @@ def collect(ids: list[str], output: Path, workers: int, save_every: int = 200) -
             if n % save_every == 0 or n == len(todo):
                 save_cache(output, flags)
                 rate = n / (time.time() - t0)
-                print(
+                say(
                     f"  {n}/{len(todo)} read, {len(failed)} failed, "
-                    f"{rate:.1f}/s, ~{(len(todo) - n) / rate / 60:.0f} min left",
-                    flush=True,
+                    f"{rate:.1f}/s, ~{(len(todo) - n) / rate / 60:.0f} min left"
                 )
     for gid, err in list(failed.items())[:20]:
-        print(f"  failed {gid}: {err}")
-    print(f"{len(flags)} granules in {output}; {len(failed)} failed (rerun to retry)")
+        say(f"  failed {gid}: {err}")
+    say(f"{len(flags)} granules in {output}; {len(failed)} failed (rerun to retry)")
 
 
 def main(argv: list[str] | None = None) -> None:

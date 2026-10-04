@@ -206,6 +206,12 @@ next to the key. The first click opens its choices, and a second click (or
 | **Globe** | every frame of the NISAR TrackFrame database, about 30,000 | about 5 minutes, ~10 GB of memory | about 70 MB, 10-20 s to draw |
 | **Screen view** | the frames in the map's current view | seconds | small |
 
+Two boxes in the same panel also collect what the caches miss: **granule
+flags** (read from each product's metadata, about 5 granules a second) and **QA
+metrics** (each `QA_STATS.h5`, about 20 a second). Both are written to the
+helper's cache, not the repository's, and need the Earthdata login in
+`~/.netrc`.
+
 The helper searches CMR for every GSLC and GUNW granule in that scope. It
 builds the page with `scripts/build_local_view.py` and opens it; a box in the
 lower-left corner shows each step until it does. Frames keep the `frame_idx`
