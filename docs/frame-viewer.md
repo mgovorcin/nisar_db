@@ -263,7 +263,9 @@ last year, in this page's area. The second click opens its panel:
 **Show** fetches again. Circles grow with magnitude and are coloured by depth,
 and clicking one gives its time, depth and a link to its USGS event page. USGS
 returns at most 20,000 events per request; the panel says when that cap was
-hit. The third click hides them.
+hit. The third click swaps the panel for a small legend: the query, the event
+count, magnitude sizes and depth colours. Its `x` hides just the legend. The
+fourth click hides the events.
 
 **CRID.** The **Mode / Polarization / CRID** section also lists the composite
 release IDs (`P05023`, ...) read from the granule names. Selecting some narrows
