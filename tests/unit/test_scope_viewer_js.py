@@ -477,7 +477,7 @@ def test_flag_status_reads_all_some_none_and_orbit() -> None:
 
     items = json.dumps([g(), g(m=1, o="POE"), {"gid": "no flags yet"}])
     result = run_js(
-        ["flagStatus"],
+        ["hasFlag", "flagStatus"],
         f"const items = {items};"
         " return [flagStatus(items, 'f'), flagStatus(items, 'm'),"
         " flagStatus(items, 'j'), flagStatus(items, 'o'),"
@@ -485,6 +485,23 @@ def test_flag_status_reads_all_some_none_and_orbit() -> None:
         " flagStatus(items.slice(2), 'f')];",
     )
     assert result == ["all", "some", "none", "mixed", "MOE", "not collected"]
+
+
+def test_flag_status_skips_flags_not_read_yet() -> None:
+    # A granule known only from the catalog carries j f o r, not m d.
+    items = json.dumps(
+        [
+            {"fl": {"j": 1, "f": 1, "o": "MOE", "r": 0, "m": 1, "d": 1}},
+            {"fl": {"j": 0, "f": 1, "o": "MOE", "r": 0}},
+        ]
+    )
+    result = run_js(
+        ["hasFlag", "flagStatus"],
+        f"const items = {items};"
+        " return [flagStatus(items, 'm'), flagStatus(items, 'j'),"
+        " flagStatus(items.slice(1), 'd')];",
+    )
+    assert result == ["all", "some", "not collected"]
 
 
 def test_selection_counts_follow_chips_and_date_range() -> None:

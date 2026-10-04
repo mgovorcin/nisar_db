@@ -89,10 +89,15 @@ mitigation applied, mixed mode and dithered. A frame reads *all*, *some* or
 *none* of its acquisitions under the current mode / polarization chips; orbit
 type shows its value, or *mixed*. **Show flags** in the plot window adds one lane
 per flag under the GSLC timeline and the GUNW pair plot, and the hover tooltip
-lists every flag of the granule or pair. `scripts/collect_granule_flags.py`
-reads the flags with HTTP byte-range requests (an Earthdata login in
-`~/.netrc`) into `catalog/granule_flags.json.gz`; the weekly viewer build reads
-only the granules published since the last run.
+lists every flag of the granule or pair. `scripts/collect_granule_qa.py
+--flags-output` reads the flags from each product's small `QA_STATS.h5` (an
+Earthdata login in `~/.netrc`), with the orbit type from CMR, into
+`catalog/granule_flags.json.gz`; the weekly viewer build reads only the
+granules published since the last run. Joint observation, full frame and
+orbit type are also in every granule's CMR record, and RFI mitigation is the
+same for every granule of a product type and release, so a local rebuild shows
+those four for every granule; mixed mode and dithering wait for the download
+and read *not read* until then.
 
 **QA metrics.** When the viewer is built with `--granule-qa`, the
 **Quality (QA)** group of **Color frames by** paints each frame by a metric from
@@ -131,7 +136,7 @@ the frame popup's QA line and the CSV export carry the values.
 
 `scripts/collect_granule_qa.py` downloads the QA files into
 `catalog/granule_qa.json.gz`, 48 at a time; with `--flags-output` it also fills
-a flag cache from the same files (all flags but the orbit type). The weekly build reads only new granules, and a
+the flag cache from the same files. The weekly build reads only new granules, and a
 granule withdrawn from the archive is cached as empty.
 
 **Browse and QA images.** Each row in the granule or interferogram list has a

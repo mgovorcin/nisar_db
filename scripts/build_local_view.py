@@ -43,6 +43,7 @@ import shapely
 from shapely.geometry import box
 
 import generate_scope_viewer as gen
+from collect_granule_qa import catalog_flags, release_group, rfi_by_release
 
 REPO = Path(__file__).resolve().parents[1]
 BLACKOUT_JSON = REPO / "catalog" / "opera-nisar-disp-blackout-dates.json"
@@ -98,20 +99,39 @@ def select_frames(
     return gdf
 
 
-def orbit_types(products: list) -> dict[str, str]:
-    """Granule id to the orbit type (``ORBIT_TYPE``) of its CMR record."""
+def with_catalog_flags(
+    cached: dict[str, dict], from_catalog: dict[str, dict]
+) -> dict[str, dict]:
+    """Granule flags: the cached ones over those the catalog gives.
+
+    The catalog's ``j f o`` gain the RFI mitigation flag of the granule's
+    release, where the cached flags agree on one, so a granule never read
+    shows four of its six flags.
+
+    Examples
+    --------
+    >>> gslc = ("NISAR_L2_PR_GSLC_031_155_D_084_4005_DHDH_A_20260928T231125_"
+    ...         "20260928T231159_P05023_N_F_J_001")
+    >>> old = gslc.replace("_001", "_002")
+    >>> with_catalog_flags({old: {"r": 0, "m": 1}}, {gslc: {"j": 1, "o": "MOE"}})[gslc]
+    {'j': 1, 'o': 'MOE', 'r': 0}
+
+    """
+    rfi = rfi_by_release(cached)
     out = {}
-    for product in products:
-        for attr in (product.metadata or {}).get("AdditionalAttributes") or []:
-            if attr.get("Name") == "ORBIT_TYPE" and attr.get("Values"):
-                out[product.name] = attr["Values"][0]
+    for gid in {**from_catalog, **cached}:
+        value = dict(from_catalog.get(gid, {}))
+        if release_group(gid) in rfi:
+            value["r"] = rfi[release_group(gid)]
+        value.update(cached.get(gid, {}))
+        out[gid] = {k: value[k] for k in "jformd" if k in value}
     return out
 
 
 def search_gslc(
     bbox: tuple[float, ...] | None, workdir: Path
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Search CMR for GSLC granules: the viewer's catalog and their orbit types."""
+) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Search CMR for GSLC granules: the viewer's catalog and their CMR flags."""
     from nisar_db.gslc_catalog import parse_gslc_list, write_catalog_csv
     from nisar_db.search.cmr import search_nisar_products
     from nisar_db.search.frames import products_to_dataframe
@@ -123,7 +143,7 @@ def search_gslc(
     parsed, _failed = parse_gslc_list(listing)
     catalog_csv = workdir / "gslc_catalog.csv"
     write_catalog_csv(parsed, catalog_csv)
-    return gen.load_gslc_catalog_csv(catalog_csv), orbit_types(products)
+    return gen.load_gslc_catalog_csv(catalog_csv), catalog_flags(products)
 
 
 def gunw_rows(names: list[str]) -> pd.DataFrame:
@@ -164,12 +184,12 @@ def gunw_rows(names: list[str]) -> pd.DataFrame:
 
 def search_gunw(
     bbox: tuple[float, ...] | None,
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Search CMR for GUNW granules: the viewer's catalog and their orbit types."""
+) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Search CMR for GUNW granules: the viewer's catalog and their CMR flags."""
     from nisar_db.search.cmr import search_nisar_products
 
     products = search_nisar_products(bbox=bbox, product_type="GUNW", max_results=0)
-    return gunw_rows([p.name for p in products]), orbit_types(products)
+    return gunw_rows([p.name for p in products]), catalog_flags(products)
 
 
 def merged_cache(repo_cache: Path, local_cache: Path | None) -> dict[str, dict]:
@@ -253,10 +273,10 @@ def build_view(
 
     with tempfile.TemporaryDirectory() as tmp:
         progress(f"Searching CMR for GSLC granules ({len(gdf)} frames)")
-        catalog, orbits = search_gslc(search_box, Path(tmp))
+        catalog, cmr_flags = search_gslc(search_box, Path(tmp))
     progress(f"Searching CMR for GUNW granules ({len(catalog)} GSLC found)")
-    gunw, gunw_orbits = search_gunw(search_box)
-    orbits.update(gunw_orbits)
+    gunw, gunw_flags = search_gunw(search_box)
+    cmr_flags.update(gunw_flags)
 
     ids = list(catalog["granule_id"]) + list(gunw["granule_id"])
     local = Path(cache_dir) if cache_dir is not None else None
@@ -279,7 +299,7 @@ def build_view(
                 local_qa,
                 progress=lambda m: progress(f"flags + QA: {m.strip()}"),
                 flags_output=local_flags,
-                orbits=orbits,
+                orbits={g: v["o"] for g, v in cmr_flags.items() if "o" in v},
                 known_flags=flags,
             )
             flags = merged_cache(GRANULE_FLAGS, local_flags)
@@ -293,6 +313,7 @@ def build_view(
         else None
     )
     frame_data = gen.build_frame_data(gdf, catalog, None, blackout, None, gunw=gunw)
+    flags = with_catalog_flags(flags, cmr_flags)
     n_flagged = gen.attach_granule_flags(frame_data, flags) if flags else 0
     n_qa = gen.attach_granule_qa(frame_data, qa) if qa else 0
 

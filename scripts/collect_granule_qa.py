@@ -59,6 +59,13 @@ Collect the QA metrics of every granule in a built viewer::
         --viewer-html docs/assets/opera_nisar_db_viewer.html \\
         --output catalog/granule_qa.json.gz
 
+and fill the flag cache from the same files::
+
+    python scripts/collect_granule_qa.py \\
+        --viewer-html docs/assets/opera_nisar_db_viewer.html \\
+        --output catalog/granule_qa.json.gz \\
+        --flags-output catalog/granule_flags.json.gz
+
 """
 
 from __future__ import annotations
@@ -71,6 +78,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import requests
@@ -308,6 +316,32 @@ def release_group(gid: str) -> tuple[str, str]:
     return parts[3], parts[-5]
 
 
+def catalog_flags(products: list) -> dict[str, dict]:
+    """The granule flags a CMR record carries: ``j``, ``f`` and ``o``.
+
+    ``JOINT_OBSERVATION``, ``FULL_FRAME`` and ``ORBIT_TYPE`` agree with the
+    flags read from the products (a GUNW's joint observation counts either
+    acquisition), so these come with the search at no extra cost; mixed mode
+    and dithering do not, and are collected from the QA files.
+    """
+    out = {}
+    for product in products:
+        attrs = {
+            a.get("Name"): a["Values"][0]
+            for a in (product.metadata or {}).get("AdditionalAttributes") or []
+            if a.get("Values")
+        }
+        value: dict = {}
+        for key, name in (("j", "JOINT_OBSERVATION"), ("f", "FULL_FRAME")):
+            if name in attrs:
+                value[key] = int(str(attrs[name]).upper() == "TRUE")
+        if "ORBIT_TYPE" in attrs:
+            value["o"] = attrs["ORBIT_TYPE"]
+        if value:
+            out[product.name] = value
+    return out
+
+
 def rfi_by_release(flags: dict[str, dict]) -> dict[tuple[str, str], int]:
     """The RFI mitigation flag of each release group the cached flags agree on.
 
@@ -450,6 +484,42 @@ def collect(
     say(f"{len(qa)} granules in {output}; {len(failed)} failed (rerun to retry)")
 
 
+CMR_SEARCH = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
+
+
+def cmr_orbit_types(ids: list[str], batch: int = 50) -> dict[str, str]:
+    """Look up the orbit type (``ORBIT_TYPE``) of each granule in CMR.
+
+    The granule ids go in the body of a POST, ``batch`` at a time, so a weekly
+    run's few thousand new granules take a minute.
+    """
+    out: dict[str, str] = {}
+    for kind, short_name in (
+        ("GSLC", "NISAR_L2_GSLC_PROVISIONAL_V1"),
+        ("GUNW", "NISAR_L2_GUNW_PROVISIONAL_V1"),
+    ):
+        names = [g for g in ids if g.split("_")[3] == kind]
+        for i in range(0, len(names), batch):
+            resp = requests.post(
+                CMR_SEARCH,
+                data={
+                    "short_name": short_name,
+                    "granule_ur[]": names[i : i + batch],
+                    "page_size": 2 * batch,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            products = [
+                SimpleNamespace(name=item["umm"]["GranuleUR"], metadata=item["umm"])
+                for item in resp.json()["items"]
+            ]
+            out.update(
+                {g: v["o"] for g, v in catalog_flags(products).items() if "o" in v}
+            )
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     """Command-line entry point."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -469,7 +539,7 @@ def main(argv: list[str] | None = None) -> None:
         "--flags-output",
         type=Path,
         default=None,
-        help="Flag cache to fill from the same files (no orbit type from the CLI).",
+        help="Flag cache to fill from the same files (orbit types from CMR).",
     )
     parser.add_argument(
         "--workers",
@@ -482,11 +552,23 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    ids = viewer_granule_ids(args.viewer_html)
+    ids = list(dict.fromkeys(viewer_granule_ids(args.viewer_html)))
+    qa_cached = load_cache(args.output)
+    flags_cached = load_cache(args.flags_output) if args.flags_output else None
+    todo = [
+        g
+        for g in ids
+        if g not in qa_cached or (flags_cached is not None and g not in flags_cached)
+    ]
     if args.limit is not None:
-        cached = load_cache(args.output)
-        ids = [g for g in ids if g not in cached][: args.limit]
-    collect(ids, args.output, args.workers, flags_output=args.flags_output)
+        todo = todo[: args.limit]
+    orbits: dict[str, str] = {}
+    if flags_cached is not None and todo:
+        orbits = cmr_orbit_types([g for g in todo if g not in flags_cached])
+        print(f"orbit types of {len(orbits)} granules from CMR", flush=True)
+    collect(
+        todo, args.output, args.workers, flags_output=args.flags_output, orbits=orbits
+    )
 
 
 if __name__ == "__main__":

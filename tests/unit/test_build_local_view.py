@@ -112,14 +112,38 @@ def test_merged_cache_prefers_the_local_cache(tmp_path: Path) -> None:
     }
 
 
-def test_orbit_types_come_from_the_cmr_record() -> None:
-    product = SimpleNamespace(
-        name=GUNW,
-        metadata={"AdditionalAttributes": [{"Name": "ORBIT_TYPE", "Values": ["MOE"]}]},
-    )
+def test_catalog_flags_come_from_the_cmr_record() -> None:
+    attrs = [
+        {"Name": "JOINT_OBSERVATION", "Values": ["TRUE"]},
+        {"Name": "FULL_FRAME", "Values": ["FALSE"]},
+        {"Name": "ORBIT_TYPE", "Values": ["MOE"]},
+    ]
+    product = SimpleNamespace(name=GUNW, metadata={"AdditionalAttributes": attrs})
     bare = SimpleNamespace(name="other", metadata={})
 
-    assert _load("build_local_view").orbit_types([product, bare]) == {GUNW: "MOE"}
+    flags = _load("build_local_view").catalog_flags([product, bare])
+
+    assert flags == {GUNW: {"j": 1, "f": 0, "o": "MOE"}}
+
+
+def test_cached_flags_win_over_the_catalog() -> None:
+    builder = _load("build_local_view")
+    read = GUNW.replace("_001", "_002")
+    new_release = GUNW.replace("P05023", "P05030")
+    cached = {read: {"j": 0, "f": 1, "o": "POE", "r": 1, "m": 0, "d": 1}}
+    from_catalog = {
+        GUNW: {"j": 1, "f": 1, "o": "MOE"},
+        read: {"j": 1, "f": 1, "o": "MOE"},
+        new_release: {"j": 0, "f": 0, "o": "MOE"},
+    }
+
+    flags = builder.with_catalog_flags(cached, from_catalog)
+
+    assert flags[read] == cached[read]
+    # Never read: the catalog's flags and the release's RFI flag, in key order.
+    assert list(flags[GUNW].items()) == [("j", 1), ("f", 1), ("o", "MOE"), ("r", 1)]
+    # A release no cached granule belongs to gets no RFI flag.
+    assert flags[new_release] == {"j": 0, "f": 0, "o": "MOE"}
 
 
 def _fake_build(lines: list[str], returncode: int) -> contextlib.nullcontext:
