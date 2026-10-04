@@ -2,6 +2,10 @@
 
 Frame-database and product-catalog generation for **OPERA DISP-NISAR**.
 
+[OPERA](https://www.jpl.nasa.gov/go/opera/) (Observational Products for
+End-Users from Remote Sensing Analysis) is the JPL project that produces
+analysis-ready products, DISP among them, from satellite radar and optical data.
+
 `nisar_db` builds the auxiliary databases that the DISP-NISAR processing system
 needs to decide *which* NISAR GSLC acquisitions stack into a consistent displacement time
 series, *where* on to process, and *when* to exclude or reset. It is the

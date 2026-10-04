@@ -1017,6 +1017,8 @@ APP_CSS = r"""
   #sidebar-scroll{overflow-y:auto;flex:1;padding:12px 14px 8px 14px;}
   #map{flex:1;position:relative;}
   h1{position:relative;font-size:15px;margin:0;padding:14px 14px 10px 14px;border-bottom:1px solid var(--border);font-weight:600;}
+  h1 .hdr-link{color:var(--text-dim);text-decoration:none;}
+  h1 .hdr-link:hover{color:var(--accent, #4da3ff);text-decoration:underline;}
   h1 small{display:block;font-weight:400;color:var(--text-dim);font-size:11px;margin-top:2px;}
   #hdr-queried{font-size:10.5px;}
   .section{margin-bottom:14px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);}
@@ -1459,6 +1461,7 @@ BODY_HTML = r"""<body>
       </div>
       <small><span id="hdr-scope">North America</span> &middot; <span id="hdr-count">0</span> frames shown</small>
       <small id="hdr-queried">CMR queried: unknown</small>
+      <small><a class="hdr-link" href="https://www.jpl.nasa.gov/go/opera/" target="_blank" rel="noopener">OPERA project &#8599;</a></small>
       <button id="sidebar-close" title="Close the panel" aria-label="Close the panel">&times;</button>
     </h1>
     <div id="sidebar-scroll">
