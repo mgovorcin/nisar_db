@@ -105,13 +105,64 @@ curl -fsSL https://pixi.sh/install.sh | bash
 git clone https://github.com/opera-adt/nisar_db
 cd nisar_db
 
-# Create environment and activate it
+# Create the environment (nisar_db is installed into it, editable) and enter it
 pixi install
 pixi shell
-
-# Install the package
-pixi run build
 ```
+
+The `default` environment carries the runtime dependencies plus those of the
+frame viewer and its local helper (geopandas >= 1.0, h5py, fsspec, aiohttp,
+pypdf, pillow, pyproj). The `dev` environment adds the test, lint and packaging
+tools:
+
+```bash
+pixi run -e dev tests     # pytest
+pixi run -e dev lint      # pre-commit on every file
+pixi run -e dev check     # mypy
+```
+
+If your home directory is small, point pixi's package caches elsewhere before
+installing, e.g.
+`export RATTLER_CACHE_DIR=/big/disk/.cache/rattler UV_CACHE_DIR=/big/disk/.cache/uv`.
+
+### Running the frame viewer locally (pixi)
+
+The [frame viewer](https://opera-adt.github.io/nisar_db/frame-viewer.html) is
+published as a static page. A few of its features need a small server on your
+own machine:
+
+- the QA report images (wrapped phase, coherence, connected components,
+  ionosphere), which sit behind the Earthdata login;
+- the Earthdata **key** login;
+- **search & rebuild** for OPERA North America, the globe, or the screen view.
+
+Start that server, and the viewer with it, with one command:
+
+```bash
+pixi run nisar_db-ui
+```
+
+Then open <http://127.0.0.1:8797/>. The first run installs the environment.
+
+- **Earthdata login.** The helper uses the `urs.earthdata.nasa.gov` entry of
+  `~/.netrc` (or `$NETRC`). Without one, log in from the key icon at the top of
+  the viewer's sidebar. The login is sent only to the helper on `127.0.0.1`,
+  kept in memory, and used only with Earthdata.
+- **Options pass through**, for example:
+  - `pixi run nisar_db-ui --port 8800` to use another port;
+  - `--viewer-html scripts/opera_nisar_db_viewer.html` to serve the page in
+    this checkout instead of the published one;
+  - `--trackframe-gpkg <file>` to reuse a TrackFrame GeoPackage instead of
+    downloading it on the first search.
+- **Cache.** QA images, grid corners, rebuilt views and the TrackFrame
+  database are kept in `.qa_helper_cache/` in the checkout.
+- **Remote machine.** When the helper runs on a server and the browser on your
+  laptop, forward the port first and open the same address on the laptop:
+  `ssh -L 8797:127.0.0.1:8797 <server>`, or the *Ports* tab in VS Code.
+- **Globe builds** search the whole archive. They take about 5 minutes and
+  ~10 GB of memory, and write a ~70 MB page.
+
+See [the frame viewer docs](docs/frame-viewer.md) for what each button does.
 
 ## Usage
 
