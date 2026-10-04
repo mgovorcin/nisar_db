@@ -93,7 +93,9 @@ lists every flag of the granule or pair. `scripts/collect_granule_qa.py
 --flags-output` reads the flags from each product's small `QA_STATS.h5` (an
 Earthdata login in `~/.netrc`), with the orbit type from CMR, into
 `catalog/granule_flags.json.gz`; the weekly viewer build reads only the
-granules published since the last run. Joint observation, full frame and
+granules published since the last run. A GUNW's orbit type is its reference
+acquisition's, the one CMR records; pairs read from the product before carry
+both as *reference/secondary* (e.g. `MOE/FOE`). Joint observation, full frame and
 orbit type are also in every granule's CMR record, and RFI mitigation is the
 same for every granule of a product type and release, so a local rebuild shows
 those four for every granule; mixed mode and dithering wait for the download

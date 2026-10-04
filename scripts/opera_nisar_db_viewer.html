@@ -522,7 +522,7 @@
             <option data-product="gunw" value="gunw_net" id="opt-gunw-net" hidden>GUNW network (connected / disconnected)</option>
             <option value="flag_j" class="opt-flag" hidden>Flag: joint observation</option>
             <option value="flag_f" class="opt-flag" hidden>Flag: full frame</option>
-            <option value="flag_o" class="opt-flag" hidden>Flag: orbit type</option>
+            <option value="flag_o" class="opt-flag" hidden>Flag: orbit type (GUNW: reference)</option>
             <option value="flag_r" class="opt-flag" hidden>Flag: RFI mitigation applied</option>
             <option value="flag_m" class="opt-flag" hidden>Flag: mixed mode</option>
             <option value="flag_d" class="opt-flag" hidden>Flag: dithered</option>
@@ -1023,7 +1023,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     gunw_net:      { label:"GUNW network",         key:"_gunwNet",      kind:"cat" },
     flag_j:        { label:"Joint observation",    key:"_flag_j",       kind:"cat" },
     flag_f:        { label:"Full frame",           key:"_flag_f",       kind:"cat" },
-    flag_o:        { label:"Orbit type",           key:"_flag_o",       kind:"cat" },
+    flag_o:        { label:"Orbit type (GUNW: reference)", key:"_flag_o", kind:"cat" },
     flag_r:        { label:"RFI mitigation applied", key:"_flag_r",     kind:"cat" },
     flag_m:        { label:"Mixed mode",           key:"_flag_m",       kind:"cat" },
     flag_d:        { label:"Dithered",             key:"_flag_d",       kind:"cat" }
@@ -1790,12 +1790,19 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     });
   }
 
+  // CMR's orbit type of a GUNW is its reference acquisition's; pairs read from
+  // the product before that carry both, as "reference/secondary".
+  function orbitLabel(g){
+    if (String(g.fl.o).includes("/")) return "orbit ref/sec";
+    return /_GUNW_/.test(g.gid || "") ? "ref. orbit" : "orbit";
+  }
+
   function flagLine(entries){
     const e = entries.find(g=>g && g.fl);
     if (!e) return META.has_flags ? `<br><span class="tdim">flags not collected</span>` : "";
     return `<br><span class="tdim">`+FLAG_FIELDS.map(ff=>
       !hasFlag(e, ff.k) ? `${ff.k === "o" ? "orbit" : ff.lane} not read` :
-      ff.k === "o" ? `orbit ${e.fl.o}` : `${ff.lane} ${e.fl[ff.k] ? "yes" : "no"}`).join(" &middot; ")+`</span>`;
+      ff.k === "o" ? `${orbitLabel(e)} ${e.fl.o}` : `${ff.lane} ${e.fl[ff.k] ? "yes" : "no"}`).join(" &middot; ")+`</span>`;
   }
 
   // One lane per flag under a plot. ``entries`` carry the chart point index, a

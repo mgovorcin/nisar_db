@@ -35,8 +35,10 @@ The same file also carries most of the granule flags that
 and dithering flags. Given a flag cache to fill (``--flags-output``), each
 download fills both caches. The two flags the file lacks come from elsewhere:
 
-* ``o`` -- the orbit type, from the granule's CMR record, when the caller has
-  it (``build_local_view.py`` does; the CLI does not, and leaves it out);
+* ``o`` -- the orbit type, from the granule's CMR record (the CLI looks it up
+  for the granules it reads). For a GUNW that is the reference acquisition's
+  orbit; ``collect_granule_flags.read_flags`` reads both from the product and
+  stores ``REF/SEC`` when they differ, which no small file records;
 * ``r`` -- RFI mitigation, which no small file records. It is set per product
   type and composite release (CRID) by the processing configuration, and the
   flags read so far agree within every such group (all GSLC 0, all GUNW 1 at
