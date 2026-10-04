@@ -1089,8 +1089,8 @@ APP_CSS = r"""
   #top-hint{position:absolute;bottom:24px;left:10px;background:var(--scrim);color:var(--text-dim);
     font-size:11.5px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);pointer-events:none;z-index:5;}
   /* MapLibre's top-left controls (zoom, compass) sit under the pass switch. */
-  .maplibregl-ctrl-top-left{top:36px;}
-  #map.has-product .maplibregl-ctrl-top-left{top:74px;}
+  .maplibregl-ctrl-top-left{top:50px;}
+  #map.has-product .maplibregl-ctrl-top-left{top:88px;}
   #basemap-ctrl{position:absolute;top:10px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;display:flex;gap:8px;}
   #basemap-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
@@ -1230,7 +1230,7 @@ APP_CSS = r"""
   .eq-color input[hidden]{display:none;}
   .eq-legend{display:flex;flex-wrap:wrap;gap:3px 9px;margin-top:6px;font-size:10.5px;color:var(--text-dim);}
   .eq-legend i{display:inline-block;border-radius:50%;margin-right:3px;vertical-align:-1px;border:1px solid #fff;}
-  #browse-card{position:absolute;left:52px;top:84px;z-index:5;width:360px;max-width:calc(100% - 20px);
+  #browse-card{position:absolute;left:52px;top:98px;z-index:5;width:360px;max-width:calc(100% - 20px);
     max-height:calc(100% - 140px);overflow:auto;resize:both;background:var(--panel);border:1px solid var(--border);
     border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
   #browse-card[hidden]{display:none;}
