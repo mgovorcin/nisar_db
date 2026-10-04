@@ -147,7 +147,18 @@ drawn only in each product's QA report, which needs an Earthdata login that a
 web page cannot send. `scripts/qa_browse_server.py` runs on your own machine
 (`127.0.0.1:8797`, with your login in `~/.netrc`). On request it downloads a
 report (about 400 kB), extracts its images and caches them. It also reads the
-grid corners that place any image on the map.
+grid corners that place any image on the map. The helper uses the
+`urs.earthdata.nasa.gov` entry of `~/.netrc` (or `$NETRC`). Without one, the
+**key icon** next to the theme switch logs it in instead. The page sends the
+username and password only to the helper on `127.0.0.1`. The helper checks them
+with Earthdata, keeps them in memory until it stops, and sends them only to
+Earthdata's login host. The page never stores the password.
+
+The key's dot shows the helper's state: green when it is connected with a
+login, yellow when it is connected without one, grey when it is not running. A
+web page cannot send an Earthdata login to ASF itself, because ASF's download
+endpoint refuses that cross-origin request, so the login has to sit with the
+helper.
 
 While the helper runs, the card gains a tab for each layer, the strip can show
 any of them, and **on map** lays the image over its frame with an opacity

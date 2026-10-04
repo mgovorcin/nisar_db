@@ -171,3 +171,67 @@ def test_extract_layers_keeps_the_rasters_north_up(tmp_path: Path) -> None:
     assert (w, h) == (130, 120)
     assert wrapped.getpixel((w // 2, 2)) < 50
     assert wrapped.getpixel((w // 2, h - 3)) > 200
+
+
+def test_earthdata_session_sends_the_login_to_earthdata_only() -> None:
+    import requests
+
+    helper = _load("qa_browse_server")
+    session = helper.EarthdataSession(("user", "secret"))
+
+    def hop(url: str) -> requests.PreparedRequest:
+        # A redirect from the ASF download host to ``url``.
+        prepared = requests.Request("GET", url).prepare()
+        response = requests.Response()
+        response.request = requests.Request(
+            "GET", "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/x.pdf"
+        ).prepare()
+        session.rebuild_auth(prepared, response)
+        return prepared
+
+    assert (
+        hop("https://urs.earthdata.nasa.gov/oauth/authorize")
+        .headers["Authorization"]
+        .startswith("Basic ")
+    )
+    assert "Authorization" not in hop("https://d1.cloudfront.net/x.pdf").headers
+
+
+def test_earthdata_auth_prefers_the_page_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load("qa_browse_server")
+    rc = tmp_path / "netrc"
+    rc.write_text("machine urs.earthdata.nasa.gov login me password pw\n")
+    rc.chmod(0o600)
+    monkeypatch.setenv("NETRC", str(rc))
+    auth = helper.EarthdataAuth()
+    assert auth.source == "netrc"
+    assert auth.session().login == ("me", "pw")
+
+    # A login checked with Earthdata wins until logout.
+    ok = type("R", (), {"status_code": 200, "raise_for_status": lambda _: None})
+    monkeypatch.setattr(helper.requests, "get", lambda *a, **k: ok())
+    auth.login("other", "pw2")
+    assert auth.source == "page"
+    assert auth.session().login == ("other", "pw2")
+    auth.logout()
+    assert auth.source == "netrc"
+
+    monkeypatch.setenv("NETRC", str(tmp_path / "missing"))
+    assert auth.source == "none"
+    with pytest.raises(PermissionError):
+        auth.session()
+
+
+def test_earthdata_auth_rejects_a_wrong_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = _load("qa_browse_server")
+    monkeypatch.setattr(
+        helper.requests, "get", lambda *a, **k: type("R", (), {"status_code": 401})()
+    )
+    auth = helper.EarthdataAuth()
+    with pytest.raises(PermissionError):
+        auth.login("me", "wrong")
+    assert auth._page is None
