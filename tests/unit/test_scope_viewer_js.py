@@ -388,8 +388,15 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
         return {"properties": props}
 
     shown = run_js(
-        ["asArray", "parseIntSet", "cycleFilter", "matchesArrayFilter", "currentFiltered"],
-        "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'}, 'f-cycle': {value: ''},"
+        [
+            "asArray",
+            "parseIntSet",
+            "cycleFilter",
+            "matchesArrayFilter",
+            "currentFiltered",
+        ],
+        "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'},"
+        " 'f-cycle': {value: ''},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
         " 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
@@ -424,8 +431,15 @@ def test_rollout_filter_matches_any_option_and_none() -> None:
         return {"properties": props}
 
     shown = run_js(
-        ["asArray", "parseIntSet", "cycleFilter", "matchesArrayFilter", "currentFiltered"],
-        "const state = {'f-track': {value: ''}, 'f-frame': {value: ''}, 'f-cycle': {value: ''},"
+        [
+            "asArray",
+            "parseIntSet",
+            "cycleFilter",
+            "matchesArrayFilter",
+            "currentFiltered",
+        ],
+        "const state = {'f-track': {value: ''}, 'f-frame': {value: ''},"
+        " 'f-cycle': {value: ''},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
         " 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
