@@ -259,3 +259,16 @@ def test_viewer_page_follows_a_changed_file(tmp_path: Path) -> None:
     page.write_text("<html><head></head>two</html>")
     os.utime(page, (1, 1))  # a different modification time, whatever the clock
     assert b"two" in viewer.html()
+
+
+def test_gzipped_pages_are_cached_per_version() -> None:
+    import gzip
+
+    helper = _load("qa_browse_server")
+    body = b"<html>" + b"x" * 10_000 + b"</html>"
+
+    first = helper.gzipped('"viewer-1"', body)
+
+    assert gzip.decompress(first) == body
+    assert len(first) < len(body) / 10
+    assert helper.gzipped('"viewer-1"', b"changed") is first

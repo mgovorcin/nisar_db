@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import geopandas as gpd
 import pytest
@@ -88,3 +89,97 @@ def test_build_requests_are_checked(tmp_path: Path) -> None:
         builds.start("bbox", [10, 0, 5, 1])  # west east of east
     # Only ids the helper writes are served.
     assert builds.page("../secrets") is None
+
+
+def test_merged_cache_collects_only_the_missing_granules(tmp_path: Path) -> None:
+    import gzip
+    import json
+
+    builder = _load("build_local_view")
+    repo = tmp_path / "repo.json.gz"
+    with gzip.open(repo, "wt") as fh:
+        json.dump({"A": {"r": 1}}, fh)
+    local = tmp_path / "local.json.gz"
+    asked: list[list[str]] = []
+
+    def collector(ids, output, _workers, **_kwargs):
+        asked.append(list(ids))
+        with gzip.open(output, "wt") as fh:
+            json.dump({g: {"r": 0} for g in ids}, fh)
+
+    merged = builder.merged_cache(
+        repo, local, ["A", "B", "B", "C"], collector, "flags", progress=lambda _: None
+    )
+
+    assert asked == [["B", "C"]]
+    assert merged == {"A": {"r": 1}, "B": {"r": 0}, "C": {"r": 0}}
+    # Without a collector the caches are only read.
+    assert builder.merged_cache(repo, local, ["Z"]) == merged
+
+
+def _fake_build(lines: list[str], returncode: int) -> contextlib.nullcontext:
+    """Stand in for ``subprocess.Popen`` of build_local_view.py."""
+    return contextlib.nullcontext(
+        SimpleNamespace(
+            stdout=iter(line + "\n" for line in lines), returncode=returncode
+        )
+    )
+
+
+def test_build_runs_as_a_child_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load("qa_browse_server")
+    builds = helper.ViewBuilds(tmp_path)
+    seen: list[list[str]] = []
+    lines = [
+        "Selecting frames",
+        "Building 3 frames",
+        helper.META_LINE + '{"n_frames": 3}',
+    ]
+
+    def popen(cmd: list[str], **_kwargs: object) -> contextlib.nullcontext:
+        seen.append(cmd)
+        return _fake_build(lines, 0)
+
+    monkeypatch.setattr(helper.subprocess, "Popen", popen)
+    job = {
+        "id": "bbox-1",
+        "scope": "bbox",
+        "bbox": [1, 2, 3, 4],
+        "collect_flags": True,
+        "collect_qa": False,
+    }
+    builds._job = dict(job, state="running")
+    builds._run(job)
+
+    status = builds.status()
+    assert status["state"] == "done" and status["n_frames"] == 3
+    assert status["view"] == "/view/bbox-1"
+    assert "--collect-flags" in seen[0] and "--collect-qa" not in seen[0]
+    assert "--bbox=1,2,3,4" in seen[0]
+
+
+def test_a_killed_build_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load("qa_browse_server")
+    builds = helper.ViewBuilds(tmp_path)
+    monkeypatch.setattr(
+        helper.subprocess,
+        "Popen",
+        lambda _cmd, **_kw: _fake_build(["flags: 200/900 read"], -9),
+    )
+    job = {
+        "id": "globe-1",
+        "scope": "globe",
+        "bbox": None,
+        "collect_flags": False,
+        "collect_qa": False,
+    }
+    builds._job = dict(job, state="running")
+    builds._run(job)
+
+    status = builds.status()
+    assert status["state"] == "error"
+    assert "killed (signal 9)" in status["step"]
