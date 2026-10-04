@@ -31,3 +31,23 @@ def test_consistent_mode_is_only_ever_a_science_mode() -> None:
         "F",
     )
     assert viewer.common_mode_coverage(_granules("0505", "0005")) == ("none", "none")
+
+
+def test_summarize_frame_stores_the_cycle_as_a_number() -> None:
+    # The CMR catalog keeps the cycle as zero-padded text; the viewer's cycle
+    # filter compares numbers.
+    group = pd.DataFrame(
+        {
+            "granule_id": ["a", "b"],
+            "date": ["2026-06-14", "2026-06-26"],
+            "start_datetime": ["2026-06-14T06:31", "2026-06-26T06:31"],
+            "mode": ["4005", "4005"],
+            "coverage": ["F", "F"],
+            "polarization": ["DHDH", "DHDH"],
+            "cycle": ["023", "024"],
+        }
+    )
+
+    granules = _viewer().summarize_frame(group)["granules"]
+
+    assert [g["cycle"] for g in granules] == [23, 24]

@@ -757,7 +757,8 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   FRAME_DATA.features.forEach(f=>{
     const p = f.properties;
     const granules = Array.isArray(p.granules) ? p.granules : [];
-    granules.forEach(g=>{ g.crid = cridOf(g.gid, 13); });
+    // Pages built from the CMR catalog stored the cycle as text ("024").
+    granules.forEach(g=>{ g.crid = cridOf(g.gid, 13); g.cycle = parseInt(g.cycle, 10); });
     p.gslc_crids = uniqSorted(granules.map(g=>g.crid).filter(Boolean));
     p.gslc_cycles = Array.from(new Set(granules.map(g=>g.cycle).filter(Number.isFinite)));
     const ifgs = asArray(p.gunw_ifgs);
