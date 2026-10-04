@@ -2825,8 +2825,11 @@ APP_JS = r"""
   const DATA_HOST = "https://nisar.asf.earthdatacloud.nasa.gov";
   const PRODUCT_COLLECTION = {GSLC:"NISAR_L2_GSLC_PROVISIONAL_V1", GUNW:"NISAR_L2_GUNW_PROVISIONAL_V1"};
   const QA_HELPER_DEFAULT = "http://127.0.0.1:8797";
-  let qaHelper = QA_HELPER_DEFAULT;
-  try { qaHelper = localStorage.getItem("nisar-qa-helper") || QA_HELPER_DEFAULT; } catch (e) {}
+  // A page the helper served itself carries a marker; it then calls the helper
+  // on its own origin, which no browser rule blocks.
+  const SERVED_BY_HELPER = Boolean(document.querySelector('meta[name="nisar-qa-helper"]'));
+  let qaHelper = SERVED_BY_HELPER ? location.origin : QA_HELPER_DEFAULT;
+  try { if (!SERVED_BY_HELPER) qaHelper = localStorage.getItem("nisar-qa-helper") || QA_HELPER_DEFAULT; } catch (e) {}
   function gidKind(gid){ return String(gid).split("_")[3]; }
   function browseUrl(gid, suffix){ return `${DATA_HOST}/BROWSE/${PRODUCT_COLLECTION[gidKind(gid)]}/${gid}/${gid}${suffix}`; }
   function productFileUrl(gid, suffix){ return `${DATA_HOST}/NISAR/${PRODUCT_COLLECTION[gidKind(gid)]}/${gid}/${gid}${suffix}`; }
@@ -3069,24 +3072,32 @@ APP_JS = r"""
     edlBtn.classList.toggle("warn", ok && helperAuth === "none");
     actions.innerHTML = "";
     if (!ok) {
-      status.innerHTML = `The QA helper is not running. Start it on this machine (needs Python with `+
-        `<code>nisar_db[browse]</code>):<br><code>${HELPER_CMD}</code>`;
+      status.innerHTML = `<b>Could not reach the QA helper</b> at <code>${qaHelper}</code>. Either it is not `+
+        `running on the computer this browser runs on, or the browser blocked this page from reaching it `+
+        `(Chrome asks a public site for "local network access").<br><br>`+
+        `Start it, then open the viewer <b>it</b> serves, which nothing blocks:<br><code>${HELPER_CMD}</code><br>`+
+        `<a href="${QA_HELPER_DEFAULT}/" target="_blank" rel="noopener">${QA_HELPER_DEFAULT}/</a><br><br>`+
+        `Helper on another computer (e.g. a server)? Forward the port first: `+
+        `<code>ssh -L 8797:127.0.0.1:8797 &lt;server&gt;</code>.`;
       form.hidden = true;
-      actions.innerHTML = edlAction("Check again", "check");
-      edlBtn.title = "QA helper not running";
+      actions.innerHTML = edlAction("Check again", "check") + edlAction("Helper address", "address");
+      edlBtn.title = "QA helper not reachable";
       return;
     }
     if (helperAuth === "netrc") {
-      status.innerHTML = `Connected &middot; the helper uses the Earthdata login in <code>~/.netrc</code>.`;
+      status.innerHTML = `Connected to <code>${qaHelper}</code> &middot; found the Earthdata login in `+
+        `<code>~/.netrc</code> on the helper's computer. QA images will load.`;
       form.hidden = true;
       actions.innerHTML = edlAction("Use another login", "show-form");
     } else if (helperAuth === "page") {
-      status.innerHTML = `Connected &middot; logged in from this page (kept by the helper until it stops).`;
+      status.innerHTML = `Connected to <code>${qaHelper}</code> &middot; logged in from this page `+
+        `(kept by the helper until it stops). QA images will load.`;
       form.hidden = true;
       actions.innerHTML = edlAction("Log out", "logout");
     } else {
-      status.innerHTML = `Connected, but the helper has no Earthdata login: no <code>~/.netrc</code> entry for `+
-        `urs.earthdata.nasa.gov. Log in here, or add one and check again.`;
+      status.innerHTML = `Connected to <code>${qaHelper}</code>, but the helper found <b>no Earthdata login</b>: `+
+        `no <code>~/.netrc</code> entry for urs.earthdata.nasa.gov on its computer. Log in here, or add one `+
+        `and check again.`;
       form.hidden = false;
       actions.innerHTML = edlAction("Check again", "check");
     }
@@ -3113,6 +3124,15 @@ APP_JS = r"""
     if (!b) return;
     if (b.dataset.edl === "show-form") { document.getElementById("edl-form").hidden = false; b.remove(); }
     else if (b.dataset.edl === "check") refreshEdl();
+    else if (b.dataset.edl === "address") {
+      const next = prompt("QA helper address", qaHelper);
+      if (next && /^https?:\/\/[^\s]+$/.test(next.trim())) {
+        qaHelper = next.trim().replace(/\/+$/, "");
+        try { localStorage.setItem("nisar-qa-helper", qaHelper); } catch (err) {}
+        helperBlobs.clear();
+        refreshEdl();
+      }
+    }
     else if (b.dataset.edl === "logout") {
       await fetch(`${qaHelper}/logout`, {method:"POST"}).catch(()=>null);
       afterLoginChange();
