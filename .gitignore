@@ -218,3 +218,6 @@ src/nisar_db/_version.py
 
 # mkdocs build output
 site/
+
+# Cache of `pixi run nisar_db-ui` (scripts/qa_browse_server.py)
+.qa_helper_cache/

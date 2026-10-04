@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "nisar-db"
 version = "0.1.0"
 description = "NISAR Frame database generation for OPERA DISP-NISAR"
@@ -19,19 +19,45 @@ publish-conda = "make publish-conda"
 create-frame-to-bound = "nisar-db create-frame-to-bound"
 create-gslc-csv = "nisar-db create-gslc-csv"
 create-consistent = "nisar-db create-consistent"
+# The frame viewer, served locally with its QA images, Earthdata login and
+# search-and-rebuild: open http://127.0.0.1:8797/ once it starts. Extra
+# arguments pass through, e.g. `pixi run nisar_db-ui --port 8800`.
+# Its cache (QA images, grid corners, rebuilt views, the TrackFrame database)
+# stays in the checkout, out of a home directory that may be small.
+nisar_db-ui = "python scripts/qa_browse_server.py --cache-dir .qa_helper_cache"
 
+# Runtime, as in requirements.txt.
 [dependencies]
-python = ">=3.9,<3.12"
-click = "*"
-geopandas = "*"
-numpy = "*"
-pandas = "*"
-requests = "*"
-shapely = "*"
-tqdm = "*"
+python = ">=3.10,<3.13"
+boto3 = ">=1.26"
+click = ">=8.0"
+duckdb = ">=0.9"
+# The viewer's rollout tagging uses GeoSeries.union_all (geopandas 1.0).
+geopandas = ">=1.0"
+numpy = ">=1.20"
+pandas = ">=1.3"
+pyarrow = ">=10.0"
+pyogrio = "*"
+requests = ">=2.25"
+shapely = ">=2.0"
+tqdm = ">=4.60"
+unzip-http = ">=0.2"
+# The viewer's QA helper (the `flags` and `browse` extras): granule flags and
+# QA files over HTTP, QA report images, and grid corners.
+aiohttp = "*"
+fsspec = "*"
+h5py = "*"
+pillow = "*"
+pypdf = "*"
+pyproj = "*"
+
+[pypi-dependencies]
+nisar-db = { path = ".", editable = true }
 
 [feature.dev.dependencies]
 pytest = "*"
+pytest-randomly = "*"
+pytest-cov = "*"
 pre-commit = "*"
 mypy = "*"
 black = "*"
@@ -41,3 +67,7 @@ python-build = "*"
 twine = "*"
 conda-build = "*"
 anaconda-client = "*"
+
+[environments]
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }

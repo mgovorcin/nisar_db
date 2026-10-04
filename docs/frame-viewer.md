@@ -147,7 +147,20 @@ drawn only in each product's QA report, which needs an Earthdata login that a
 web page cannot send. `scripts/qa_browse_server.py` runs on your own machine
 (`127.0.0.1:8797`, with your login in `~/.netrc`). On request it downloads a
 report (about 400 kB), extracts its images and caches them. It also reads the
-grid corners that place any image on the map. The helper uses the
+grid corners that place any image on the map.
+
+Start it from a checkout of this repository with [pixi](https://pixi.sh):
+
+```bash
+pixi run nisar_db-ui
+```
+
+Then open `http://127.0.0.1:8797/`. The first run installs the environment.
+Extra arguments pass through to the helper, e.g.
+`pixi run nisar_db-ui --port 8800` or `--viewer-html <page>` to serve another
+page. Its cache stays in `.qa_helper_cache/` in the checkout.
+
+The helper uses the
 `urs.earthdata.nasa.gov` entry of `~/.netrc` (or `$NETRC`). Without one, the
 **key icon** next to the theme switch logs it in instead. The page sends the
 username and password only to the helper on `127.0.0.1`. The helper checks them
