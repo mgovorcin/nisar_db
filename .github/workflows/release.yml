@@ -106,8 +106,9 @@ jobs:
             --na-only --nisar-gpkg NISAR_TrackFrame_L.gpkg
 
       # Blackout windows are climatological, so they are not rebuilt every
-      # release: a new snow analysis produces them, otherwise the previous
-      # release's file is carried forward.
+      # release: a new snow analysis produces them, otherwise the copy kept in
+      # the repo (catalog/opera-nisar-disp-blackout-dates.json) is used, and
+      # failing that the previous release's file is carried forward.
       - name: Resolve blackout-dates asset
         env:
           GH_TOKEN: ${{ github.token }}
@@ -117,6 +118,9 @@ jobs:
           if [ -n "$SNOW_GEOJSON" ] && [ -f "$SNOW_GEOJSON" ]; then
             echo "Deriving blackout dates from $SNOW_GEOJSON"
             nisar-db create-blackout-dates --input-file "$SNOW_GEOJSON" --output-file "$BLACKOUT"
+          elif [ -f catalog/opera-nisar-disp-blackout-dates.json ]; then
+            echo "Using the blackout dates kept in the repo"
+            cp catalog/opera-nisar-disp-blackout-dates.json "$BLACKOUT"
           elif gh release download --pattern 'opera-nisar-disp-blackout-dates-*.json' \
                  --dir prev-blackout 2>/dev/null; then
             echo "Reusing blackout dates from the previous release"
