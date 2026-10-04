@@ -186,6 +186,7 @@ def sync(
     html = _replace_body(html)
     html = _replace_app_js(html)
     html = _upsert_const(html, "UNR_GPS_DATA", gps_sites)
+    html = _upsert_const(html, "VOLCANO_DATA", gen.load_volcanoes())
     html = _refresh_frame_data(
         html, calval_sites, granule_flags, rollout, blackout, gunw, granule_qa
     )

@@ -117,6 +117,8 @@ CALVAL_MIN_OVERLAP = 0.10
 #: The DISP-S1 North America rollout on Sentinel-1 frames, written by
 #: ``make_rollout_regions.py``; NISAR frames take the options they overlap.
 ROLLOUT_REGIONS = Path(__file__).resolve().parent / "disp_s1_rollout_regions.geojson"
+#: Smithsonian GVP Holocene volcanoes, trimmed by ``make_volcano_list.py``.
+VOLCANO_LIST = Path(__file__).resolve().parent / "gvp_holocene_volcanoes.geojson"
 
 # A NISAR frame joins a rollout option once that option's S1 frames cover this
 # share of it: a frame half in a region is processed with it, one grazing the
@@ -932,13 +934,27 @@ def load_gps_sites(source: str | Path | None) -> dict:
     return parse_gps_sites(text)
 
 
+def load_volcanoes(path: Path = VOLCANO_LIST) -> dict:
+    """Read the trimmed Holocene volcano list, or an empty collection."""
+    if not path.exists():
+        return {"type": "FeatureCollection", "features": []}
+    return json.loads(path.read_text())
+
+
 def render_html(
     frame_data: dict,
     meta: dict,
     gps_sites: dict | None = None,
     rollout_regions: dict | None = None,
+    volcanoes: dict | None = None,
 ) -> str:
-    """Render the full self-contained HTML document as a string."""
+    """Render the full self-contained HTML document as a string.
+
+    ``volcanoes`` defaults to the shipped ``VOLCANO_LIST``, so every page,
+    published or built locally, can draw them.
+    """
+    if volcanoes is None:
+        volcanoes = load_volcanoes()
     maplibre_css = (VENDOR_DIR / "maplibre-gl.css").read_text()
     maplibre_js = (VENDOR_DIR / "maplibre-gl.js").read_text()
 
@@ -957,6 +973,8 @@ def render_html(
             rollout_regions or {"type": "FeatureCollection", "features": []},
             separators=(",", ":"),
         )
+        + ";\nconst VOLCANO_DATA = "
+        + json.dumps(volcanoes, separators=(",", ":"))
         + ";"
     )
 
@@ -1693,6 +1711,33 @@ BODY_HTML = r"""<body>
       <div class="eq-legend" id="eq-legend"></div>
       <div class="stat-line">USGS ComCat via its FDSN event service; at most 20,000 events per request.
         Click an event for its details.</div>
+    </div>
+    <div class="overlay-panel" id="volcano-panel" hidden>
+      <div class="overlay-head"><span>Volcanoes</span><button class="li-x" data-close="volcano" title="Close">&times;</button></div>
+      <div class="eq-form">
+        <label for="vo-since">Erupted since</label>
+        <select id="vo-since"><option value="" selected>any time (Holocene)</option><option value="0">1 CE</option>
+          <option value="1500">1500</option><option value="1900">1900</option><option value="1950">1950</option>
+          <option value="2000">2000</option><option value="2020">2020</option></select>
+        <label for="vo-area">Area</label>
+        <select id="vo-area"><option value="page" selected>this page's area</option><option value="view">current map view</option>
+          <option value="world">whole world</option></select>
+        <label for="vo-color">Colour by</label>
+        <div class="eq-color"><select id="vo-color"><option value="alert" selected>USGS alert (aviation code)</option>
+          <option value="type">volcano type</option><option value="last">last eruption</option><option value="single">one colour</option></select>
+          <input type="color" id="vo-single" value="#e5484d" title="Marker colour" hidden></div>
+        <label></label>
+        <label class="check-row" style="margin:0"><input type="checkbox" id="vo-usgs" style="width:auto;margin:0 4px 0 0">USGS-monitored only</label>
+      </div>
+      <div class="bc-ctl"><span id="vo-status" class="tdim"></span></div>
+      <div class="eq-legend" id="vo-legend"></div>
+      <div class="stat-line">Smithsonian GVP Holocene volcanoes (a snapshot in the page) with live US alert levels
+        from the USGS Volcano Hazards Program. Click a volcano for its details.</div>
+    </div>
+    <div class="overlay-panel" id="volcanoleg-panel" hidden>
+      <div class="overlay-head"><span>Volcanoes</span><button class="li-x" data-close="volcanoleg" title="Close">&times;</button></div>
+      <div class="tdim" id="vo-leg-what"></div>
+      <div class="eq-legend" id="vo-legend-2"></div>
     </div>
     <div class="overlay-panel" id="quakeleg-panel" hidden>
       <div class="overlay-head"><span>Earthquakes (USGS)</span><button class="li-x" data-close="quakeleg" title="Close">&times;</button></div>
@@ -3888,7 +3933,10 @@ APP_JS = r"""
   // Overlay switches stack above the globe toggle. Each click steps through
   // off -> layer -> layer + panel -> off, so the map can carry the layer
   // without its panel in the way.
-  const overlayState = {snow:0, rollout:0, colorby:0, quake:0};
+  const overlayState = {snow:0, rollout:0, colorby:0, quake:0, volcano:0};
+  // Point layers (earthquakes, volcanoes) step through: points, options,
+  // legend, labels, off. The area overlays step through layer, panel, off.
+  const FIVE_STEP = new Set(["quake", "volcano"]);
   const overlayButtons = {};
   function overlayControl(key, title, svg){
     return {
@@ -3901,7 +3949,7 @@ APP_JS = r"""
         btn.innerHTML = svg;
         // Earthquakes step through events, options, legend, labels, off; the
         // others through layer, panel, off.
-        btn.addEventListener("click", ()=> setOverlay(key, (overlayState[key] + 1) % (key === "quake" ? 5 : 3)));
+        btn.addEventListener("click", ()=> setOverlay(key, (overlayState[key] + 1) % (FIVE_STEP.has(key) ? 5 : 3)));
         overlayButtons[key] = btn;
         this._wrap.appendChild(btn);
         return this._wrap;
@@ -3926,6 +3974,12 @@ APP_JS = r"""
     // A seismogram trace.
     `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
     `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`), "bottom-right");
+
+  map.addControl(overlayControl("volcano", "Volcanoes",
+    // A cone with a plume.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 20.5h19l-6.2-9.2h-6.6z"/><path d="M10.5 11.3 12 13l1.5-1.7"/>`+
+    `<path d="M12 8.5c-.8-1.1-.3-2.4.8-2.9.4-1.3 2-1.8 3-1M9 7.5c-1-.4-1.3-1.6-.6-2.4"/></g></svg>`), "bottom-right");
 
   // ---------- colour panel ----------
   // Its button steps: panel -> legend on the map -> off. Inside the panel the
@@ -4105,7 +4159,7 @@ APP_JS = r"""
   }
 
   // Bottom panels stack upwards in this order; on a phone only one is open.
-  const PANEL_ORDER = ["colorby","snow","rollout","quake","quakeleg"];
+  const PANEL_ORDER = ["colorby","snow","rollout","quake","quakeleg","volcano","volcanoleg"];
   const PHONE = window.matchMedia("(max-width: 768px)");
   function layoutPanels(){
     let bottom = 30;
@@ -4140,7 +4194,7 @@ APP_JS = r"""
     }
     if (level === 2 && PHONE.matches) {
       if (overlayState.colorby === 1) setOverlay("colorby", 2);
-      ["snow","rollout","quake"].filter(k=>k !== key).forEach(k=>{ if (overlayState[k] === 2) setOverlay(k, 1); });
+      ["snow","rollout","quake","volcano"].filter(k=>k !== key).forEach(k=>{ if (overlayState[k] === 2) setOverlay(k, 1); });
     }
     overlayState[key] = level;
     const on = level > 0;
@@ -4150,13 +4204,15 @@ APP_JS = r"""
       btn.title = `${btn.getAttribute("aria-label")} - ${["off","layer shown","layer and panel shown"][level]}; click for ${["layer","panel","off"][level]}`;
     }
     document.getElementById(`${key}-panel`).hidden = level < 2;
-    if (key === "quake") {
-      showQuakes(on);
-      if (btn) btn.title = `${btn.getAttribute("aria-label")} - ${["off","events shown","options open","legend shown","labels shown"][level]}; `+
-        `click for ${["events","options","legend","labels","off"][level]}`;
-      document.getElementById("quake-panel").hidden = level !== 2;
-      document.getElementById("quakeleg-panel").hidden = level < 3;
-      if (map.getLayer("quake-labels")) map.setLayoutProperty("quake-labels", "visibility", level === 4 ? "visible" : "none");
+    if (FIVE_STEP.has(key)) {
+      const what = key === "quake" ? "events" : "volcanoes";
+      if (key === "quake") showQuakes(on); else showVolcanoes(on);
+      if (btn) btn.title = `${btn.getAttribute("aria-label")} - ${["off",`${what} shown`,"options open","legend shown","labels shown"][level]}; `+
+        `click for ${[what,"options","legend","labels","off"][level]}`;
+      document.getElementById(`${key}-panel`).hidden = level !== 2;
+      document.getElementById(`${key}leg-panel`).hidden = level < 3;
+      const labels = key === "quake" ? "quake-labels" : "volcano-labels";
+      if (map.getLayer(labels)) map.setLayoutProperty(labels, "visibility", level === 4 ? "visible" : "none");
       layoutPanels();
       return;
     }
@@ -4170,7 +4226,7 @@ APP_JS = r"""
   // panel leaves its legend on the map.
   document.querySelectorAll(".overlay-panel [data-close]").forEach(b=>
     b.addEventListener("click", ()=>{
-      const key = b.dataset.close === "quakeleg" ? "quake" : b.dataset.close;
+      const key = b.dataset.close.endsWith("leg") ? b.dataset.close.slice(0, -3) : b.dataset.close;
       setOverlay(key, key === "colorby" ? 2 : 1);
     }));
 
@@ -4358,6 +4414,202 @@ APP_JS = r"""
   document.getElementById("eq-color").addEventListener("change", eqRecolor);
   document.getElementById("eq-single").addEventListener("input", eqRecolor);
   eqLegend();
+
+
+  // Earthquakes and volcanoes always sit on top: of the frames, the overlays,
+  // and any layer added after them (a browse image, the selection).
+  const POINT_LAYERS = ["quake-points", "quake-labels", "volcano-points", "volcano-labels"];
+  let raisingPoints = false;
+  function raisePointLayers(){
+    if (raisingPoints) return;
+    const order = map.getStyle().layers.map(l=>l.id);
+    const top = order.slice(-POINT_LAYERS.filter(id=>map.getLayer(id)).length);
+    const want = POINT_LAYERS.filter(id=>map.getLayer(id));
+    if (want.every((id, i)=> top[i] === id)) return;
+    raisingPoints = true;
+    want.forEach(id=> map.moveLayer(id));
+    raisingPoints = false;
+  }
+  map.on("styledata", raisePointLayers);
+
+  // ---------- volcanoes ----------
+  // The Smithsonian GVP Holocene list ships in the page (its server sends no
+  // CORS header); US alert levels come live from USGS, which allows any origin.
+  const VO_USGS_URL = "https://volcanoes.usgs.gov/vsc/api/volcanoApi/geojson";
+  const VO_ALERT = [["RED","#e5484d"],["ORANGE","#ff8a4d"],["YELLOW","#ffd24d"],["GREEN","#2fbf71"],["none","#8c8c8c"]];
+  const VO_TYPES = ["Stratovolcano","Shield","Caldera","Volcanic field","Complex","Fissure vent","Pyroclastic cone",
+                    "Lava dome","Submarine","Other"];
+  const VO_LAST = [[2000,"#e5484d","2000 on"],[1900,"#ff8a4d","1900-1999"],[1500,"#ffd24d","1500-1899"],
+                   [0,"#7ee787","1-1499 CE"],[-20000,"#4da3ff","BCE"]];
+  let voReady = false, voUsgs = null;
+  const HAS_VOLCANOES = typeof VOLCANO_DATA !== "undefined" && VOLCANO_DATA.features.length > 0;
+  function voTypeOf(t){
+    const base = String(t || "").replace(/\((?:s|es)\)$/, "").trim();
+    if (base === "Compound") return "Complex";
+    return VO_TYPES.includes(base) ? base : (/submarine/i.test(base) ? "Submarine" : "Other");
+  }
+  function voYear(y){ return y == null ? "unknown" : (y < 0 ? `${-y} BCE` : `${y} CE`); }
+  function voData(){
+    // Short keys from make_volcano_list.py, plus what the map styles and
+    // filters on: a type group, a sortable year and the coordinates.
+    VOLCANO_DATA.features.forEach(f=>{
+      const p = f.properties;
+      p.tg = voTypeOf(p.t);
+      p.yy = p.y == null ? -99999 : p.y;
+      p.lon = f.geometry.coordinates[0]; p.lat = f.geometry.coordinates[1];
+      if (!p.cc) p.cc = "none";
+    });
+    return VOLCANO_DATA;
+  }
+  function voColorExpr(){
+    const mode = document.getElementById("vo-color").value;
+    if (mode === "single") return document.getElementById("vo-single").value;
+    if (mode === "alert") {
+      const e = ["match", ["get", "cc"]];
+      VO_ALERT.slice(0, -1).forEach(([k, c])=> e.push(k, c));
+      e.push(VO_ALERT[VO_ALERT.length - 1][1]);
+      return e;
+    }
+    if (mode === "type") {
+      const e = ["match", ["get", "tg"]];
+      VO_TYPES.forEach((t, i)=> e.push(t, CAT_PALETTE[i % CAT_PALETTE.length]));
+      e.push("#8c8c8c");
+      return e;
+    }
+    const e = ["case", ["<=", ["get", "yy"], -99999], "#8c8c8c"];
+    VO_LAST.forEach(([y, c])=> e.push([">=", ["get", "yy"], y], c));
+    e.push("#4da3ff");
+    return e;
+  }
+  function voArea(){
+    const area = document.getElementById("vo-area").value;
+    if (area === "world" || (area === "page" && META.view_scope === "globe")) return null;
+    if (area === "page") return Array.isArray(META.view_bbox) ? META.view_bbox : NA_AREA;
+    const b = map.getBounds();
+    if (b.getWest() < -180 || b.getEast() > 180 || b.getWest() >= b.getEast()) return null;
+    return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  }
+  function voFilter(){
+    const f = ["all"];
+    const since = document.getElementById("vo-since").value;
+    if (since !== "") f.push([">=", ["get", "yy"], Number(since)]);
+    if (document.getElementById("vo-usgs").checked) f.push(["!=", ["get", "cc"], "none"]);
+    const a = voArea();
+    if (a) f.push([">=", ["get", "lon"], a[0]], [">=", ["get", "lat"], a[1]], ["<=", ["get", "lon"], a[2]], ["<=", ["get", "lat"], a[3]]);
+    return f;
+  }
+  function voCount(){
+    const since = document.getElementById("vo-since").value, usgs = document.getElementById("vo-usgs").checked, a = voArea();
+    return VOLCANO_DATA.features.filter(({properties: p})=>
+      (since === "" || p.yy >= Number(since)) && (!usgs || p.cc !== "none") &&
+      (!a || (p.lon >= a[0] && p.lat >= a[1] && p.lon <= a[2] && p.lat <= a[3]))).length;
+  }
+  function voLegend(){
+    const mode = document.getElementById("vo-color").value;
+    const tri = c=> `<i style="width:0;height:0;border:none;border-radius:0;border-left:5px solid transparent;`+
+      `border-right:5px solid transparent;border-bottom:9px solid ${c}"></i>`;
+    let items;
+    if (mode === "single") items = [[document.getElementById("vo-single").value, "volcano"]];
+    else if (mode === "alert") items = VO_ALERT.map(([k, c])=> [c, k === "none" ? "no USGS alert" : k.toLowerCase()]);
+    else if (mode === "type") items = VO_TYPES.map((t, i)=> [CAT_PALETTE[i % CAT_PALETTE.length], t]);
+    else items = VO_LAST.map(([, c, t])=> [c, t]).concat([["#8c8c8c", "unknown"]]);
+    const html = items.map(([c, t])=> `<span>${tri(c)}${t}</span>`).join("");
+    document.getElementById("vo-legend").innerHTML = html;
+    document.getElementById("vo-legend-2").innerHTML = html;
+    const since = document.getElementById("vo-since");
+    document.getElementById("vo-leg-what").textContent =
+      `${voCount().toLocaleString()} volcanoes · erupted ${since.value === "" ? "in the Holocene" : `since ${since.selectedOptions[0].textContent}`}`+
+      `${document.getElementById("vo-usgs").checked ? " · USGS-monitored" : ""} · ${document.getElementById("vo-area").selectedOptions[0].textContent}`;
+  }
+  function voApply(){
+    document.getElementById("vo-single").hidden = document.getElementById("vo-color").value !== "single";
+    if (map.getLayer("volcano-points")) {
+      map.setPaintProperty("volcano-points", "icon-color", voColorExpr());
+      map.setFilter("volcano-points", voFilter());
+      map.setFilter("volcano-labels", voFilter());
+    }
+    const n = voCount();
+    document.getElementById("vo-status").textContent =
+      `${n.toLocaleString()} volcano${n === 1 ? "" : "es"}${voUsgs ? ` · ${voUsgs}` : ""}`;
+    voLegend();
+  }
+  function ensureVolcanoLayer(){
+    if (voReady) return;
+    voReady = true;
+    // A white triangle drawn once; as an SDF image it takes any icon colour.
+    const size = 32, c = document.createElement("canvas");
+    c.width = c.height = size;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.moveTo(size / 2, 3); ctx.lineTo(size - 3, size - 4); ctx.lineTo(3, size - 4); ctx.closePath(); ctx.fill();
+    map.addImage("volcano-tri", ctx.getImageData(0, 0, size, size), {sdf: true});
+    map.addSource("volcanoes", {type:"geojson", data: voData()});
+    map.addLayer({id:"volcano-points", type:"symbol", source:"volcanoes", filter: voFilter(),
+      layout:{"icon-image":"volcano-tri", "icon-allow-overlap": true,
+              "icon-size": ["interpolate", ["linear"], ["zoom"], 1, 0.32, 5, 0.5, 9, 0.75],
+              "symbol-sort-key": ["get", "yy"]},
+      paint:{"icon-color": voColorExpr(), "icon-halo-color": "#1a1a1a", "icon-halo-width": 1.2}});
+    map.addLayer({id:"volcano-labels", type:"symbol", source:"volcanoes", filter: voFilter(),
+      layout:{visibility:"none", "symbol-sort-key": ["-", 0, ["get", "yy"]],
+        "text-field": ["format", ["get", "n"], {}, "\n", {},
+          ["case", ["<=", ["get", "yy"], -99999], "last eruption unknown",
+                   ["<", ["get", "yy"], 0], ["concat", ["to-string", ["-", 0, ["get", "yy"]]], " BCE"],
+                   ["concat", ["to-string", ["get", "yy"]], " CE"]], {"font-scale": 0.8}],
+        "text-font": ["Open Sans Semibold"], "text-size": 11,
+        "text-variable-anchor": ["left", "right", "top", "bottom"], "text-radial-offset": 0.9, "text-justify": "auto"},
+      paint:{"text-color": "#1a1a1a", "text-halo-color": "#ffffff", "text-halo-width": 1.4}});
+    const html = f=>{
+      const p = f.properties;
+      const alert = p.cc && p.cc !== "none"
+        ? `<div class="pop-row">USGS: <b>${p.cc}</b> / ${p.al || ""}${p.ad ? ` (since ${String(p.ad).slice(0, 10)})` : ""}`+
+          `${p.nu ? ` &middot; <a href="${p.nu}" target="_blank" rel="noopener">notice</a>` : ""}</div>` : "";
+      return `<div class="pop-title">${p.n}</div>`+
+        `<div class="pop-row">${p.t || "volcano"} &middot; ${[p.c, p.r].filter(Boolean).join(" &middot; ")}</div>`+
+        `<div class="pop-row">Last eruption: ${voYear(p.y)}${p.e != null ? ` &middot; ${p.e} m` : ""}${p.ev ? ` &middot; ${p.ev}` : ""}</div>`+ alert;
+    };
+    const tip = new maplibregl.Popup({closeButton:false, closeOnClick:false, offset:10});
+    map.on("mousemove", "volcano-points", e=>{
+      map.getCanvas().style.cursor = "pointer";
+      tip.setLngLat(e.lngLat).setHTML(html(e.features[0])).addTo(map);
+    });
+    map.on("mouseleave", "volcano-points", ()=>{ map.getCanvas().style.cursor = ""; tip.remove(); });
+    map.on("click", "volcano-points", e=>{
+      const p = e.features[0].properties;
+      tip.remove();
+      const links = [`<a href="https://volcano.si.edu/volcano.cfm?vn=${p.v}" target="_blank" rel="noopener">GVP page</a>`]
+        .concat(p.uu ? [`<a href="${p.uu}" target="_blank" rel="noopener">USGS / observatory page</a>`] : []);
+      new maplibregl.Popup({offset:10}).setLngLat(e.lngLat)
+        .setHTML(html(e.features[0]) + `<div class="pop-row">${links.join(" &middot; ")}</div>`).addTo(map);
+    });
+    // Live US alert levels, joined on the volcano number.
+    fetch(VO_USGS_URL).then(r=>r.json()).then(j=>{
+      const byNum = new Map();
+      j.features.forEach(({properties: u})=>{ if (u.vnum) byNum.set(Number(u.vnum), u); });
+      let n = 0;
+      VOLCANO_DATA.features.forEach(({properties: p})=>{
+        const u = byNum.get(p.v);
+        if (!u) return;
+        n++;
+        p.cc = u.colorCode && u.colorCode !== "UNASSIGNED" ? u.colorCode : "none";
+        p.al = u.alertLevel && u.alertLevel !== "UNASSIGNED" ? u.alertLevel : "";
+        p.ad = u.alertDate || u.colorDate || "";
+        p.uu = u.volcanoUrl || "";
+        p.nu = u.noticeUrl || "";
+      });
+      voUsgs = `USGS alerts for ${n} US volcanoes`;
+      map.getSource("volcanoes").setData(VOLCANO_DATA);
+      voApply();
+    }).catch(()=>{ voUsgs = "USGS alert levels unavailable"; voApply(); });
+  }
+  function showVolcanoes(on){
+    if (on) ensureVolcanoLayer();
+    ["volcano-points"].forEach(id=>{ if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); });
+    if (!on && map.getLayer("volcano-labels")) map.setLayoutProperty("volcano-labels", "visibility", "none");
+    if (on) voApply();
+  }
+  ["vo-since","vo-area","vo-color","vo-usgs"].forEach(id=> document.getElementById(id).addEventListener("change", voApply));
+  document.getElementById("vo-single").addEventListener("input", voApply);
+  if (!HAS_VOLCANOES) overlayButtons.volcano && overlayButtons.volcano.closest(".maplibregl-ctrl").remove();
 
   function refreshSnowPanel(){
     if (!META.has_blackout) return;
@@ -5173,6 +5425,8 @@ APP_JS = r"""
           map.queryRenderedFeatures(e.point, {layers:["gps-points"]}).length) { popup.remove(); return; }
       if (map.getLayer("quake-points") &&
           map.queryRenderedFeatures(e.point, {layers:["quake-points"]}).length) { popup.remove(); return; }
+      if (map.getLayer("volcano-points") &&
+          map.queryRenderedFeatures(e.point, {layers:["volcano-points"]}).length) { popup.remove(); return; }
       cancelHoverClose();
       const p = e.features[0].properties;
       popup.setLngLat(e.lngLat).setHTML(product === "gunw" ? gunwHoverHtml(p) : `
@@ -5289,6 +5543,8 @@ APP_JS = r"""
           map.queryRenderedFeatures(e.point, {layers:["gps-points"]}).length) return;
       if (map.getLayer("quake-points") &&
           map.queryRenderedFeatures(e.point, {layers:["quake-points"]}).length) return;
+      if (map.getLayer("volcano-points") &&
+          map.queryRenderedFeatures(e.point, {layers:["volcano-points"]}).length) return;
       const feature = idToFeature(e.features[0].properties.id);
       if (!feature) return;
       cancelHoverClose();

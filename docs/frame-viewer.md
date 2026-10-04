@@ -270,6 +270,26 @@ count, magnitude sizes and colour key. Its `x` hides just the legend. The
 fourth click adds labels: magnitude over date beside each event. Overlapping
 labels are dropped, larger events first. The fifth click hides everything.
 
+**Volcanoes.** The *volcano* button steps through the same five clicks as
+the earthquakes: triangles, options, legend, labels (name and last eruption),
+off. The volcanoes are the Smithsonian Global Volcanism Program's Holocene list
+(about 1,200 worldwide). Its server sends no CORS header, so a trimmed copy
+ships in the page, refreshed by `scripts/make_volcano_list.py`. The current US
+alert levels and aviation colour codes come live from the USGS Volcano Hazards
+Program each time the layer first opens.
+
+The options panel offers:
+
+- **Erupted since**: any time in the Holocene, or a year;
+- **Area**: this page's area, the current view, or the world;
+- **Colour by**: USGS alert (the default), volcano type, last eruption, or one
+  colour;
+- **USGS-monitored only**.
+
+Clicking a volcano gives its type, country, last eruption, elevation and
+evidence, any USGS alert with its notice, and links to its GVP page and its
+USGS observatory page.
+
 **CRID.** The **Mode / Polarization / CRID** section also lists the composite
 release IDs (`P05023`, ...) read from the granule names. Selecting some narrows
 the map to frames with granules from those releases and recounts the colourings
