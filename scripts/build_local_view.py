@@ -59,7 +59,10 @@ GRID = 1e-4
 
 
 def select_frames(
-    trackframe_gpkg: Path, scope: str, bbox: tuple[float, ...] | None = None
+    trackframe_gpkg: Path,
+    scope: str,
+    bbox: tuple[float, ...] | None = None,
+    land_only: bool = False,
 ) -> gpd.GeoDataFrame:
     """Return the frames of ``scope`` with the columns the viewer reads.
 
@@ -71,6 +74,8 @@ def select_frames(
         ``na``, ``globe`` or ``bbox``.
     bbox : tuple of float, optional
         ``west, south, east, north`` for the ``bbox`` scope.
+    land_only : bool
+        Drop the frames with no land (the database's ``hasLand``).
 
     Returns
     -------
@@ -93,6 +98,8 @@ def select_frames(
         gdf = gdf[gdf.intersects(box(*bbox))]
     elif scope != "globe":
         raise ValueError(f"unknown scope {scope!r}; expected one of {SCOPES}")
+    if land_only:
+        gdf = gdf[gdf["hasLand"].astype(bool)]
     gdf = gdf.copy()
     gdf["direction"] = gdf["passDirection"].str[0]
     gdf["geometry"] = shapely.set_precision(gdf.geometry.values, GRID)
@@ -192,6 +199,24 @@ def search_gunw(
     return gunw_rows([p.name for p in products]), catalog_flags(products)
 
 
+def on_frames(rows: pd.DataFrame, frames: gpd.GeoDataFrame) -> pd.DataFrame:
+    """The catalog rows of the frames in ``frames``, by track, frame and direction.
+
+    Examples
+    --------
+    >>> frames = pd.DataFrame({"track": [1], "frame": [10], "direction": ["A"]})
+    >>> rows = pd.DataFrame({"track": [1, 1], "frame": [10, 10],
+    ...                      "direction": ["A", "D"], "granule_id": ["a", "d"]})
+    >>> list(on_frames(rows, frames)["granule_id"])
+    ['a']
+
+    """
+    keys = ["track", "frame", "direction"]
+    wanted = pd.MultiIndex.from_frame(frames[keys].astype({"track": int, "frame": int}))
+    have = pd.MultiIndex.from_frame(rows[keys].astype({"track": int, "frame": int}))
+    return rows[have.isin(wanted)]
+
+
 def merged_cache(repo_cache: Path, local_cache: Path | None) -> dict[str, dict]:
     """Read a per-granule cache, the repo's updated with a local one."""
     cache = gen.load_granule_flags(repo_cache) if repo_cache.exists() else {}
@@ -233,6 +258,7 @@ def build_view(
     collect_flags: bool = False,
     collect_qa: bool = False,
     cache_dir: Path | None = None,
+    land_only: bool = False,
 ) -> dict:
     """Search CMR, build the frame data for ``scope`` and write the page.
 
@@ -253,6 +279,8 @@ def build_view(
         (needs ``~/.netrc`` and ``cache_dir``).
     cache_dir : Path, optional
         Where the local flag and QA caches live.
+    land_only : bool
+        Leave out the frames with no land.
 
     Returns
     -------
@@ -261,7 +289,7 @@ def build_view(
 
     """
     progress("Selecting frames")
-    gdf = select_frames(trackframe_gpkg, scope, bbox)
+    gdf = select_frames(trackframe_gpkg, scope, bbox, land_only)
     gdf["isCalVal"] = gen.flag_calval_frames(gdf, gpd.read_file(gen.CALVAL_SITES))
     rollout_options, gdf["rollout"], gdf["rollout_regions"] = gen.rollout_by_frame(
         gdf, gen.ROLLOUT_REGIONS
@@ -278,7 +306,11 @@ def build_view(
     gunw, gunw_flags = search_gunw(search_box)
     cmr_flags.update(gunw_flags)
 
-    ids = list(catalog["granule_id"]) + list(gunw["granule_id"])
+    # The globe and North America searches cover the whole archive; only the
+    # granules of this page's frames are worth collecting.
+    ids = list(on_frames(catalog, gdf)["granule_id"]) + list(
+        on_frames(gunw, gdf)["granule_id"]
+    )
     local = Path(cache_dir) if cache_dir is not None else None
     local_flags = local / "granule_flags.json.gz" if local else None
     local_qa = local / "granule_qa.json.gz" if local else None
@@ -382,6 +414,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Read the QA metrics the caches miss (needs --cache-dir, ~/.netrc).",
     )
     parser.add_argument(
+        "--land-only",
+        action="store_true",
+        help="Leave out the frames with no land (about half of the globe's).",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=None,
@@ -406,6 +443,7 @@ def main(argv: list[str] | None = None) -> None:
         collect_flags=args.collect_flags,
         collect_qa=args.collect_qa,
         cache_dir=args.cache_dir,
+        land_only=args.land_only,
     )
     say(META_LINE + json.dumps({"n_frames": meta["n_frames"]}))
 

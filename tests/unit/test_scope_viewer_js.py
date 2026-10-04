@@ -382,6 +382,7 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
             "frame": idx,
             "passDirection": "Ascending",
             "isCalVal": False,
+            "hasLand": idx != 14,
             "gslc_modes": ["2005"],
             "gslc_pols": ["DHDH"],
         }
@@ -398,7 +399,7 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
         "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'},"
         " 'f-cycle': {value: ''},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
-        " 'f-selected-only': {checked: false}};"
+        " 'f-land': {checked: false}, 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
         " querySelector: () => ({value: 'all'})};"
         " globalThis.product = 'gslc';"
@@ -408,11 +409,14 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
         " globalThis.activeRollout = new Set();"
         " const ids = () => currentFiltered().map(f => f.properties.id);"
         " const all = ids(); state['f-selected-only'].checked = true;"
-        " const only = ids(); selected.clear(); return [all, only, ids()];",
+        " const only = ids(); selected.clear(); const none = ids();"
+        " state['f-selected-only'].checked = false; state['f-land'].checked = true;"
+        " return [all, only, none, ids()];",
         [frame(14), frame(15), frame(16)],
     )
-    # the flag narrows the other filters rather than replacing them
-    assert shown == [["47_14", "47_15"], ["47_15"], []]
+    # the flags narrow the other filters rather than replacing them; frame 14
+    # has no land
+    assert shown == [["47_14", "47_15"], ["47_15"], [], ["47_15"]]
 
 
 def test_rollout_filter_matches_any_option_and_none() -> None:
@@ -441,7 +445,7 @@ def test_rollout_filter_matches_any_option_and_none() -> None:
         "const state = {'f-track': {value: ''}, 'f-frame': {value: ''},"
         " 'f-cycle': {value: ''},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
-        " 'f-selected-only': {checked: false}};"
+        " 'f-land': {checked: false}, 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
         " querySelector: () => ({value: 'all'})};"
         " globalThis.product = 'gslc';"

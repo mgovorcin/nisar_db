@@ -698,6 +698,8 @@ def build_frame_data(
             "isCalVal": bool(row["isCalVal"]),
             "isSNWG": bool(row["isSNWG"]),
             "isDNC": bool(row["isDNC"]),
+            # Any land in the frame (the TrackFrame database's fractionLand > 0).
+            "hasLand": bool(row.get("hasLand", True)),
             "gslc_count": s["gslc_count"] if s else 0,
             "n_unique": s["n_unique"] if s else 0,
             "n_duplicate": s["n_duplicate"] if s else 0,
@@ -1423,6 +1425,8 @@ BODY_HTML = r"""<body>
           <div><b>Globe</b><span>every NISAR frame (~30,000); a few minutes and a large page</span></div></label>
         <label class="srch-opt"><input type="radio" name="srch-scope" value="bbox">
           <div><b>Screen view</b><span id="srch-bbox">the frames in the map's current view</span></div></label>
+        <label class="srch-opt"><input type="checkbox" id="srch-land">
+          <div><b>Land only</b><span>skip frames with no land, about half of the globe's</span></div></label>
         <label class="srch-opt"><input type="checkbox" id="srch-flags">
           <div><b>Also collect missing granule flags</b><span>from each QA_STATS.h5 with the QA metrics, about 75 granules a second</span></div></label>
         <label class="srch-opt"><input type="checkbox" id="srch-qa">
@@ -1601,6 +1605,7 @@ BODY_HTML = r"""<body>
         <div class="section-head" data-target="sec-flags"><span>Product / Site Flags</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-flags">
           <div class="check-row"><input type="checkbox" id="f-calval"><label for="f-calval" style="margin:0;color:var(--text)">CalVal frames only</label></div>
+          <div class="check-row" id="row-land" hidden><input type="checkbox" id="f-land"><label for="f-land" style="margin:0;color:var(--text)">Land frames only</label></div>
           <div class="check-row"><input type="checkbox" id="f-selected-only"><label for="f-selected-only" style="margin:0;color:var(--text)">Show only selected frames</label></div>
           <div class="check-row" id="row-gps" hidden><input type="checkbox" id="f-gps-show"><label for="f-gps-show" style="margin:0;color:var(--text)">Show UNR GPS sites (<span id="gps-count">0</span>)</label></div>
           <div class="stat-line" id="gps-hint" hidden>Nevada Geodetic Laboratory sites; click one for its position time series.</div>
@@ -2548,6 +2553,7 @@ APP_JS = r"""
     const idFilter = document.getElementById("f-id").value.trim().toLowerCase();
     const passVal = document.querySelector('input[name="pass"]:checked').value;
     const calval = document.getElementById("f-calval").checked;
+    const landOnly = document.getElementById("f-land").checked;
     const selectedOnly = document.getElementById("f-selected-only").checked;
     return FRAME_DATA.features.filter(f=>{
       const p = f.properties;
@@ -2558,6 +2564,7 @@ APP_JS = r"""
           !String(p.frame_idx).includes(idFilter)) return false;
       if (passVal !== "all" && p.passDirection !== passVal) return false;
       if (calval && !p.isCalVal) return false;
+      if (landOnly && p.hasLand === false) return false;
       if (selectedOnly && !selected.has(p.id)) return false;
       if (!ignoreRollout && activeRollout.size) {
         const ro = asArray(p.rollout);
@@ -3365,6 +3372,7 @@ APP_JS = r"""
     try {
       const r = await fetch(`${qaHelper}/build`, {method:"POST", headers:{"Content-Type":"application/json"},
                                                   body: JSON.stringify({scope, bbox: scope === "bbox" ? viewBbox() : null,
+                                                                        land: document.getElementById("srch-land").checked,
                                                                         flags: document.getElementById("srch-flags").checked,
                                                                         qa: document.getElementById("srch-qa").checked})});
       const j = await r.json();
@@ -3661,7 +3669,9 @@ APP_JS = r"""
 
   ["f-track","f-frame","f-cycle","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
   document.querySelectorAll('input[name="pass"]').forEach(r=>r.addEventListener("change", applyFilters));
-  ["f-calval","f-selected-only"].forEach(id=>document.getElementById(id).addEventListener("change", applyFilters));
+  ["f-calval","f-land","f-selected-only"].forEach(id=>document.getElementById(id).addEventListener("change", applyFilters));
+  // Pages built before frames carried hasLand have nothing to filter on.
+  document.getElementById("row-land").hidden = !FRAME_DATA.features.some(f=>f.properties.hasLand !== undefined);
 
   document.getElementById("btn-clear-filters").addEventListener("click", ()=>{
     document.getElementById("f-track").value = "";
@@ -3670,6 +3680,7 @@ APP_JS = r"""
     document.getElementById("f-id").value = "";
     document.querySelector('input[name="pass"][value="all"]').checked = true;
     document.getElementById("f-calval").checked = false;
+    document.getElementById("f-land").checked = false;
     document.getElementById("f-selected-only").checked = false;
     document.getElementById("f-date-start").value = "";
     document.getElementById("f-date-end").value = "";
@@ -3872,11 +3883,11 @@ APP_JS = r"""
     URL.revokeObjectURL(a.href);
   }
   document.getElementById("btn-export-csv").addEventListener("click", ()=>{
-    const rows = [["frame_id","track","frame","passDirection","color","gslc_count","n_unique","n_duplicate","cons_mode","cons_cov","n_modes","n_full","n_partial","isCalVal","isSNWG","isDNC","rollout","rollout_regions"]];
+    const rows = [["frame_id","track","frame","passDirection","color","gslc_count","n_unique","n_duplicate","cons_mode","cons_cov","n_modes","n_full","n_partial","isCalVal","isSNWG","isDNC","hasLand","rollout","rollout_regions"]];
     Array.from(selected.values()).forEach(e=>{
       const p = e.feature.properties;
       rows.push([p.frame_idx,p.track,p.frame,p.passDirection,e.color,p.gslc_count,p.n_unique,p.n_duplicate,p.cons_mode,p.cons_cov,
-        p.n_modes,p.n_full,p.n_partial,p.isCalVal,p.isSNWG,p.isDNC,
+        p.n_modes,p.n_full,p.n_partial,p.isCalVal,p.isSNWG,p.isDNC,p.hasLand,
         asArray(p.rollout).join(";"),asArray(p.rollout_regions).join(";")]);
     });
     downloadBlob(toCsv(rows), "nisar_selected_frames.csv", "text/csv");

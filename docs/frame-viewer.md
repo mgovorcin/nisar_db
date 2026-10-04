@@ -214,6 +214,8 @@ next to the key. The first click opens its choices, and a second click (or
 | **Globe** | every frame of the NISAR TrackFrame database, about 30,000 | about 5 minutes, ~10 GB of memory | about 70 MB, 10-20 s to draw |
 | **Screen view** | the frames in the map's current view | seconds | small |
 
+**Land only** leaves the frames with no land out of the page, and their
+granules out of any collection: about half the globe's frames are open ocean.
 Two boxes in the same panel also collect what the caches miss: **granule
 flags** and **QA metrics**. Both come from one download of each granule's small
 `QA_STATS.h5`, about 75 granules a second (a globe of ~185,000 granules in
@@ -353,7 +355,9 @@ cycles; its name carries both.
 
 **Show only selected frames**, in the same section, narrows the map, the
 summary and the over-time chart to the frames in your selection, on top of
-whatever other filters are set.
+whatever other filters are set. **Land frames only** hides the frames with no
+land at all (the TrackFrame database's `hasLand`, i.e. `fractionLand` above
+zero): about half of the globe's frames, and 30 of North America's 1,295.
 
 !!! note "Where the CalVal frames come from"
     **CalVal frames only** shows the NISAR frames over the twelve DISP-S1

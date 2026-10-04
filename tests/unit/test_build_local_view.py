@@ -40,6 +40,7 @@ def _trackframe(tmp_path: Path) -> Path:
             "isCalVal": [False] * 3,
             "isSNWG": [False] * 3,
             "isDNC": [False] * 3,
+            "hasLand": [True, False, True],
         },
         geometry=[
             box(-122.5, 36.0, -121.5, 37.0),
@@ -66,6 +67,11 @@ def test_select_frames_keeps_the_trackframe_index(tmp_path: Path) -> None:
     assert list(boxed["frame_idx"]) == [0]
     with pytest.raises(ValueError):
         builder.select_frames(gpkg, "bbox")
+    # Land only drops the frame with no land, keeping the others' numbers.
+    assert list(builder.select_frames(gpkg, "globe", land_only=True)["frame_idx"]) == [
+        0,
+        2,
+    ]
 
 
 def test_gunw_rows_parse_the_granule_names() -> None:
