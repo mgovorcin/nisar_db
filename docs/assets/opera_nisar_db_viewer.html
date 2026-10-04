@@ -222,6 +222,8 @@
   #map-legend .ml-head .ml-grip{color:var(--text-dim);margin-right:4px;letter-spacing:-1px;}
   .maplibregl-ctrl-group button.overlay-btn{display:flex;align-items:center;justify-content:center;color:#303030;}
   .maplibregl-ctrl-group button.overlay-btn.active{background:#b2daf7;color:#14425e;}
+  /* The geoscience box stands apart from the frame tools below it. */
+  .maplibregl-ctrl-bottom-right .maplibregl-ctrl.geo-group{margin-bottom:22px;}
   .overlay-panel{position:absolute;right:52px;bottom:30px;z-index:6;width:300px;max-height:min(60vh,520px);overflow-y:auto;
     background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;
     box-shadow:0 4px 16px rgb(0 0 0 / .3);}
@@ -3031,6 +3033,18 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       onRemove(){ this._wrap.remove(); }
     };
   }
+  // Several overlay buttons in one box, like the zoom buttons.
+  function overlayGroupControl(items, className){
+    return {
+      onAdd(){
+        this._wrap = document.createElement("div");
+        this._wrap.className = `maplibregl-ctrl maplibregl-ctrl-group ${className || ""}`;
+        items.forEach(it=> this._wrap.appendChild(overlayControl(it.key, it.title, it.svg).onAdd().firstChild));
+        return this._wrap;
+      },
+      onRemove(){ this._wrap.remove(); }
+    };
+  }
   const HAS_ROLLOUT_DATA = typeof ROLLOUT_DATA !== "undefined" && ROLLOUT_DATA.features.length > 0;
   if (HAS_ROLLOUT_DATA) map.addControl(overlayControl("rollout", "Rollout regions overview",
     // A flag planted on an outlined region: a rollout area, not a map layer.
@@ -3044,20 +3058,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     `<path d="M8 17.2 7 20M11 17.2 10 20"/>`+
     `<path d="M16 16.6v4.8M13.9 17.8l4.2 2.4M13.9 20.2l4.2-2.4"/></g></svg>`), "bottom-right");
 
-  map.addControl(overlayControl("quake", "Earthquakes (USGS)",
-    // A seismogram trace.
-    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
-    `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`), "bottom-right");
 
-  map.addControl(overlayControl("plates", "Tectonic plates",
-    // Same glyph as the geepers viewer's plates tool.
-    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
-    `stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 9 9l5 3-5 4 3 5"/><path d="M3 9h3M18 15h3"/></g></svg>`), "bottom-right");
-  map.addControl(overlayControl("volcano", "Volcanoes",
-    // A cone with a plume.
-    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
-    `stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 20.5h19l-6.2-9.2h-6.6z"/><path d="M10.5 11.3 12 13l1.5-1.7"/>`+
-    `<path d="M12 8.5c-.8-1.1-.3-2.4.8-2.9.4-1.3 2-1.8 3-1M9 7.5c-1-.4-1.3-1.6-.6-2.4"/></g></svg>`), "bottom-right");
 
   // ---------- colour panel ----------
   // Its button steps: panel -> legend on the map -> off. Inside the panel the
@@ -3254,6 +3255,23 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     `d="M12 3a9 9 0 0 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.7 17 3 12 3z"/>`+
     `<circle cx="7.5" cy="11.5" r="1.4" fill="currentColor"/><circle cx="10" cy="7.4" r="1.4" fill="currentColor"/>`+
     `<circle cx="14.6" cy="7.4" r="1.4" fill="currentColor"/><circle cx="17.2" cy="11" r="1.4" fill="currentColor"/></svg>`), "bottom-right");
+  // Plates, earthquakes and volcanoes: one box above the frame colouring,
+  // set apart from the frame tools below it.
+  map.addControl(overlayGroupControl([
+    {key:"plates", title:"Tectonic plates", svg:
+    // Same glyph as the geepers viewer's plates tool.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 9 9l5 3-5 4 3 5"/><path d="M3 9h3M18 15h3"/></g></svg>`},
+    {key:"quake", title:"Earthquakes (USGS)", svg:
+    // A seismogram trace.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`},
+    {key:"volcano", title:"Volcanoes", svg:
+    // A cone with a plume.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 20.5h19l-6.2-9.2h-6.6z"/><path d="M10.5 11.3 12 13l1.5-1.7"/>`+
+    `<path d="M12 8.5c-.8-1.1-.3-2.4.8-2.9.4-1.3 2-1.8 3-1M9 7.5c-1-.4-1.3-1.6-.6-2.4"/></g></svg>`}
+  ], "geo-group"), "bottom-right");
 
   function setOverlay(key, level){
     if (key === "colorby") {
@@ -3521,8 +3539,10 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   // ---------- tectonic plates ----------
   // Bird (2003), PB2002, via fraxen/tectonicplates on GitHub, which allows
   // any origin. Boundaries first; plate names on a second click.
-  // Adapted from the geepers UNR grid viewer (scripts/browse_unr_grid.html,
-  // opera-adt/geepers): the same files, cycle and label placement.
+  // Adapted from geepers (https://github.com/opera-adt/geepers,
+  // scripts/browse_unr_grid.html), Copyright (c) 2025-2026 California
+  // Institute of Technology, Apache License 2.0: the same files, cycle and
+  // label placement.
   const PLATES_URL = "https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/";
   let platesLoading = null, plateNamesLoading = null;
   async function fetchPlates(name){
@@ -3797,7 +3817,8 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   }
   ["vo-since","vo-area","vo-color","vo-usgs"].forEach(id=> document.getElementById(id).addEventListener("change", voApply));
   document.getElementById("vo-single").addEventListener("input", voApply);
-  if (!HAS_VOLCANOES) overlayButtons.volcano && overlayButtons.volcano.closest(".maplibregl-ctrl").remove();
+  // Just the button: it shares its box with the plates and earthquakes.
+  if (!HAS_VOLCANOES && overlayButtons.volcano) overlayButtons.volcano.remove();
 
   function refreshSnowPanel(){
     if (!META.has_blackout) return;

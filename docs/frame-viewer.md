@@ -303,6 +303,9 @@ Clicking a volcano gives its type, country, last eruption, elevation and
 evidence, any USGS alert with its notice, and links to its GVP page and its
 USGS observatory page.
 
+The plates, earthquake and volcano buttons share one box above the frame
+colouring (*palette*) button, set apart from the frame tools below it.
+
 **Tectonic plates.** The *plates* button draws the plate boundaries of Bird
 (2003), PB2002, fetched from
 [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates) on first use.
