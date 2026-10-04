@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import geopandas as gpd
 import pytest
 from shapely.geometry import box
-from typing_extensions import Self
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 GUNW = (
@@ -117,18 +117,13 @@ def test_merged_cache_collects_only_the_missing_granules(tmp_path: Path) -> None
     assert builder.merged_cache(repo, local, ["Z"]) == merged
 
 
-class _FakeBuild:
-    """Stands in for ``subprocess.Popen`` of build_local_view.py."""
-
-    def __init__(self, lines: list[str], returncode: int) -> None:
-        self.stdout = iter(line + "\n" for line in lines)
-        self.returncode = returncode
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        pass
+def _fake_build(lines: list[str], returncode: int) -> contextlib.nullcontext:
+    """Stand in for ``subprocess.Popen`` of build_local_view.py."""
+    return contextlib.nullcontext(
+        SimpleNamespace(
+            stdout=iter(line + "\n" for line in lines), returncode=returncode
+        )
+    )
 
 
 def test_build_runs_as_a_child_process(
@@ -143,9 +138,9 @@ def test_build_runs_as_a_child_process(
         helper.META_LINE + '{"n_frames": 3}',
     ]
 
-    def popen(cmd: list[str], **_kwargs: object) -> _FakeBuild:
+    def popen(cmd: list[str], **_kwargs: object) -> contextlib.nullcontext:
         seen.append(cmd)
-        return _FakeBuild(lines, 0)
+        return _fake_build(lines, 0)
 
     monkeypatch.setattr(helper.subprocess, "Popen", popen)
     job = {
@@ -173,7 +168,7 @@ def test_a_killed_build_is_reported(
     monkeypatch.setattr(
         helper.subprocess,
         "Popen",
-        lambda _cmd, **_kw: _FakeBuild(["flags: 200/900 read"], -9),
+        lambda _cmd, **_kw: _fake_build(["flags: 200/900 read"], -9),
     )
     job = {
         "id": "globe-1",
