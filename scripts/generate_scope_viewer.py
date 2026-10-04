@@ -1457,12 +1457,14 @@ BODY_HTML = r"""<body>
 
 
       <div class="section collapsed">
-        <div class="section-head" data-target="sec-loc"><span>Location (Track / Frame)</span><span class="chev">&#9660;</span></div>
+        <div class="section-head" data-target="sec-loc"><span>Location (Track / Frame / Cycle)</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-loc">
           <label>Track (e.g. "12" or "10-20" or "12,34,56")</label>
           <input type="text" id="f-track" placeholder="all tracks">
           <label>Frame</label>
           <input type="text" id="f-frame" placeholder="all frames">
+          <label>Cycle (e.g. "23" or "20-25"); a GUNW pair matches on either acquisition</label>
+          <input type="text" id="f-cycle" placeholder="all cycles">
           <label>Frame ID (e.g. 8109) or track_frame (e.g. 34_19)</label>
           <input type="text" id="f-id" placeholder="e.g. 8109 or 34_19">
         </div>
@@ -1659,10 +1661,16 @@ APP_JS = r"""
     const granules = Array.isArray(p.granules) ? p.granules : [];
     granules.forEach(g=>{ g.crid = cridOf(g.gid, 13); });
     p.gslc_crids = uniqSorted(granules.map(g=>g.crid).filter(Boolean));
+    p.gslc_cycles = Array.from(new Set(granules.map(g=>g.cycle).filter(Number.isFinite)));
     const ifgs = asArray(p.gunw_ifgs);
-    ifgs.forEach(g=>{ g.crid = cridOf(g.gid, 15); });
+    // A GUNW name carries the reference and secondary cycles (fields 4 and 8).
+    ifgs.forEach(g=>{
+      g.crid = cridOf(g.gid, 15);
+      g.cyc = [4, 8].map(i=>parseInt(String(g.gid || "").split("_")[i], 10)).filter(Number.isFinite);
+    });
     if (typeof p.gunw_ifgs === "string") p.gunw_ifgs = ifgs;
     p.gunw_crids = uniqSorted(ifgs.map(g=>g.crid).filter(Boolean));
+    p.gunw_cycles = Array.from(new Set(ifgs.flatMap(g=>g.cyc)));
   });
   // A pair's RFI likelihood is the larger of its two acquisitions', read from
   // the frame's GSLCs; the GUNW's own QA has none.
@@ -2337,6 +2345,11 @@ APP_JS = r"""
     });
     return out;
   }
+  // The cycles typed in the Location section, or null for all.
+  function cycleFilter(){ return parseIntSet(document.getElementById("f-cycle").value); }
+  function inCycles(g, cycles){
+    return !cycles || (g.cyc ? g.cyc.some(c=>cycles.has(c)) : cycles.has(g.cycle));
+  }
   function matchesArrayFilter(propArr, chipSet){
     if (chipSet.size === 0) return true;
     return propArr.some(v => chipSet.has(v));
@@ -2346,6 +2359,7 @@ APP_JS = r"""
     const ignoreRollout = !!(opts && opts.ignoreRollout);
     const trackSet = parseIntSet(document.getElementById("f-track").value);
     const frameSet = parseIntSet(document.getElementById("f-frame").value);
+    const cycleSet = cycleFilter();
     const idFilter = document.getElementById("f-id").value.trim().toLowerCase();
     const passVal = document.querySelector('input[name="pass"]:checked').value;
     const calval = document.getElementById("f-calval").checked;
@@ -2354,6 +2368,7 @@ APP_JS = r"""
       const p = f.properties;
       if (trackSet && !trackSet.has(p.track)) return false;
       if (frameSet && !frameSet.has(p.frame)) return false;
+      if (cycleSet && !asArray(product === "gunw" ? p.gunw_cycles : p.gslc_cycles).some(c=>cycleSet.has(c))) return false;
       if (idFilter && !p.id.toLowerCase().includes(idFilter) &&
           !String(p.frame_idx).includes(idFilter)) return false;
       if (passVal !== "all" && p.passDirection !== passVal) return false;
@@ -2403,7 +2418,7 @@ APP_JS = r"""
   const GRANULE_KEYS_BY_FRAME = new Map(
     FRAME_DATA.features.map(f=>{
       const granules = Array.isArray(f.properties.granules) ? f.properties.granules : [];
-      return [f.properties.id, granules.map(g=>[g.mode, g.pol, g.date || "", `${g.date}|${g.mode}|${g.cov}`, g.crid || ""])];
+      return [f.properties.id, granules.map(g=>[g.mode, g.pol, g.date || "", `${g.date}|${g.mode}|${g.cov}`, g.crid || "", g.cycle])];
     })
   );
 
@@ -2414,10 +2429,11 @@ APP_JS = r"""
     };
   }
 
-  function selectedGslcStats(rows, modes, pols, from, to, crids){
+  function selectedGslcStats(rows, modes, pols, from, to, crids, cycles){
     const seen = new Set(), modeSet = new Set();
     let n = 0;
-    for (const [mode, pol, date, key, crid] of rows) {
+    for (const [mode, pol, date, key, crid, cycle] of rows) {
+      if (cycles && !cycles.has(cycle)) continue;
       if (modes.size && !modes.has(mode)) continue;
       if (pols.size && !pols.has(pol)) continue;
       if (crids && crids.size && !crids.has(crid)) continue;
@@ -2432,8 +2448,8 @@ APP_JS = r"""
 
   // In GUNW mode the date range applies to the secondary date, the same date the
   // over-time chart bins interferograms by.
-  function selectedGunwCount(ifgs, modes, pols, from, to, crids){
-    return ifgs.filter(g=>
+  function selectedGunwCount(ifgs, modes, pols, from, to, crids, cycles){
+    return ifgs.filter(g=> inCycles(g, cycles) &&
       (!modes.size || modes.has(g.mode)) && (!pols.size || pols.has(g.pol)) &&
       (!crids || !crids.size || crids.has(g.crid)) &&
       (!from || g.sec >= from) && (!to || g.sec <= to)).length;
@@ -2441,15 +2457,16 @@ APP_JS = r"""
 
   function updateSelectedCounts(){
     const {from, to} = dateRange();
+    const cycles = cycleFilter();
     FRAME_DATA.features.forEach(f=>{
       const p = f.properties;
       const st = selectedGslcStats(GRANULE_KEYS_BY_FRAME.get(p.id) || [],
-                                   activeChips.gslcMode, activeChips.gslcPol, from, to, activeChips.gslcCrid);
+                                   activeChips.gslcMode, activeChips.gslcPol, from, to, activeChips.gslcCrid, cycles);
       p.gslc_count_sel = st.acq;
       p.n_duplicate_sel = st.dup;
       p.n_modes_sel = st.modes;
       p.gunw_count_sel = selectedGunwCount(asArray(p.gunw_ifgs),
-                                           activeChips.gunwMode, activeChips.gunwPol, from, to, activeChips.gunwCrid);
+                                           activeChips.gunwMode, activeChips.gunwPol, from, to, activeChips.gunwCrid, cycles);
     });
   }
   updateSelectedCounts();
@@ -2457,7 +2474,8 @@ APP_JS = r"""
   function selectionRow(p){
     const {from, to} = dateRange();
     const span = from || to ? ` ${from || "start"} to ${to || "end"}` : "";
-    return `<div class="pop-row">Selected modes / pols / CRIDs${span}: ${p.gslc_count_sel} acq. &middot; `+
+    const cyc = document.getElementById("f-cycle").value.trim();
+    return `<div class="pop-row">Selected modes / pols / CRIDs${cyc ? ` / cycles ${cyc}` : ""}${span}: ${p.gslc_count_sel} acq. &middot; `+
            `${p.n_duplicate_sel} dup. &middot; ${p.n_modes_sel} mode(s)</div>`;
   }
 
@@ -2584,7 +2602,9 @@ APP_JS = r"""
     const modes = gunw ? activeChips.gunwMode : activeChips.gslcMode;
     const pols = gunw ? activeChips.gunwPol : activeChips.gslcPol;
     const crids = gunw ? activeChips.gunwCrid : activeChips.gslcCrid;
+    const cycles = cycleFilter();
     return asArray(gunw ? p.gunw_ifgs : p.granules).filter(g=>{
+      if (!inCycles(g, cycles)) return false;
       const date = gunw ? g.sec : g.date;
       return (!modes.size || modes.has(g.mode)) && (!pols.size || pols.has(g.pol)) &&
              (!crids || !crids.size || crids.has(g.crid)) && (!from || date >= from) && (!to || date <= to);
@@ -3254,13 +3274,14 @@ APP_JS = r"""
     applyFilters();
   });
 
-  ["f-track","f-frame","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
+  ["f-track","f-frame","f-cycle","f-id"].forEach(id=>document.getElementById(id).addEventListener("input", applyFilters));
   document.querySelectorAll('input[name="pass"]').forEach(r=>r.addEventListener("change", applyFilters));
   ["f-calval","f-selected-only"].forEach(id=>document.getElementById(id).addEventListener("change", applyFilters));
 
   document.getElementById("btn-clear-filters").addEventListener("click", ()=>{
     document.getElementById("f-track").value = "";
     document.getElementById("f-frame").value = "";
+    document.getElementById("f-cycle").value = "";
     document.getElementById("f-id").value = "";
     document.querySelector('input[name="pass"][value="all"]').checked = true;
     document.getElementById("f-calval").checked = false;

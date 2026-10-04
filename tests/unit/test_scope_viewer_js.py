@@ -266,7 +266,7 @@ def test_gunw_csv_has_one_row_per_granule() -> None:
 
 def test_gunw_count_follows_the_gunw_chips() -> None:
     counts = run_js(
-        ["selectedGunwCount"],
+        ["inCycles", "selectedGunwCount"],
         f"const ifgs = {json.dumps(IFGS)}; const none = new Set();"
         " return [selectedGunwCount(ifgs, none, none, '', ''),"
         " selectedGunwCount(ifgs, none, new Set(['HV']), '', ''),"
@@ -388,8 +388,15 @@ def test_selected_only_flag_keeps_just_the_selected_frames() -> None:
         return {"properties": props}
 
     shown = run_js(
-        ["asArray", "parseIntSet", "matchesArrayFilter", "currentFiltered"],
+        [
+            "asArray",
+            "parseIntSet",
+            "cycleFilter",
+            "matchesArrayFilter",
+            "currentFiltered",
+        ],
         "const state = {'f-track': {value: ''}, 'f-frame': {value: '14-15'},"
+        " 'f-cycle': {value: ''},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
         " 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
@@ -424,8 +431,15 @@ def test_rollout_filter_matches_any_option_and_none() -> None:
         return {"properties": props}
 
     shown = run_js(
-        ["asArray", "parseIntSet", "matchesArrayFilter", "currentFiltered"],
+        [
+            "asArray",
+            "parseIntSet",
+            "cycleFilter",
+            "matchesArrayFilter",
+            "currentFiltered",
+        ],
         "const state = {'f-track': {value: ''}, 'f-frame': {value: ''},"
+        " 'f-cycle': {value: ''},"
         " 'f-id': {value: ''}, 'f-calval': {checked: false},"
         " 'f-selected-only': {checked: false}};"
         " globalThis.document = {getElementById: id => state[id],"
@@ -504,7 +518,7 @@ def test_gunw_count_filters_on_the_secondary_date() -> None:
         ]
     )
     result = run_js(
-        ["selectedGunwCount"],
+        ["inCycles", "selectedGunwCount"],
         f"const ifgs = {ifgs}; const none = new Set();"
         " return [selectedGunwCount(ifgs, none, none, '', ''),"
         " selectedGunwCount(ifgs, none, none, '2025-11-15', ''),"
@@ -618,3 +632,27 @@ def test_pair_rfi_is_the_worse_of_its_two_acquisitions() -> None:
         " return p.gunw_ifgs.map(g=>g.rl ?? null);",
     )
     assert out == [0.7, 0.2, None]
+
+
+def test_cycle_filter_narrows_the_counts() -> None:
+    rows = [
+        ["4005", "DHDH", "2025-11-01", "a", "P05023", 23],
+        ["4005", "DHDH", "2025-11-13", "b", "P05023", 24],
+        ["4005", "DHDH", "2025-11-25", "c", "P05023", 25],
+    ]
+    ifgs = [
+        {"mode": "4000", "pol": "SH", "sec": "2025-11-13", "cyc": [23, 24]},
+        {"mode": "4000", "pol": "SH", "sec": "2025-11-25", "cyc": [24, 25]},
+        {"mode": "4000", "pol": "SH", "sec": "2025-12-07", "cyc": [25, 26]},
+    ]
+    out = run_js(
+        ["inCycles", "selectedGslcStats", "selectedGunwCount"],
+        f"const rows = {json.dumps(rows)}; const ifgs = {json.dumps(ifgs)};"
+        " const none = new Set(); const c = new Set([24]);"
+        " return [selectedGslcStats(rows, none, none, '', '', none, c).acq,"
+        " selectedGslcStats(rows, none, none, '', '', none, null).acq,"
+        " selectedGunwCount(ifgs, none, none, '', '', none, c),"
+        " selectedGunwCount(ifgs, none, none, '', '', none, new Set([26]))];",
+    )
+    # A pair matches on either acquisition's cycle.
+    assert out == [1, 3, 2, 1]

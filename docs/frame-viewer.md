@@ -215,6 +215,12 @@ loses (**Color frames by → Blackout share of a month**, with a month picker),
 and the frame popup draws a twelve-month strip shaded by the same share.
 **Blackout duration (months)** still colours by the window's total length.
 
+**Cycle.** The **Location (Track / Frame / Cycle)** section also takes cycle
+numbers (`23`, `20-25`, `12,14`). Like the CRID chips, they narrow the map to
+frames with granules from those cycles and recount the colourings (counts and
+QA) over just them. A GUNW pair counts when either acquisition is in one of the
+cycles; its name carries both.
+
 **Show only selected frames**, in the same section, narrows the map, the
 summary and the over-time chart to the frames in your selection, on top of
 whatever other filters are set.
