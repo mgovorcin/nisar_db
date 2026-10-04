@@ -1196,6 +1196,13 @@ APP_CSS = r"""
     background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;
     box-shadow:0 4px 16px rgb(0 0 0 / .3);}
   .overlay-panel[hidden]{display:none;}
+  .eq-form{display:grid;grid-template-columns:auto 1fr;gap:5px 8px;align-items:center;margin:6px 0;}
+  .eq-form label{color:var(--text-dim);font-size:11px;}
+  .eq-form select,.eq-form input{width:100%;margin:0;padding:2px 4px;font-size:11px;box-sizing:border-box;}
+  .eq-dates{grid-column:1 / -1;display:flex;gap:4px;align-items:center;}
+  .eq-dates[hidden]{display:none;}
+  .eq-legend{display:flex;flex-wrap:wrap;gap:3px 9px;margin-top:6px;font-size:10.5px;color:var(--text-dim);}
+  .eq-legend i{display:inline-block;border-radius:50%;margin-right:3px;vertical-align:-1px;border:1px solid #fff;}
   #browse-card{position:absolute;left:10px;top:128px;z-index:5;width:360px;max-width:calc(100% - 20px);
     max-height:calc(100% - 140px);overflow:auto;resize:both;background:var(--panel);border:1px solid var(--border);
     border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
@@ -1659,6 +1666,26 @@ BODY_HTML = r"""<body>
       <div class="snow-ramp"></div>
       <div class="cmap-labels"><span id="snow-lo">0%</span><span id="snow-unit">share of the year blacked out</span><span id="snow-hi">100%</span></div>
       <div class="stat-line" id="snow-stat"></div>
+    </div>
+    <div class="overlay-panel" id="quake-panel" hidden>
+      <div class="overlay-head"><span>Earthquakes (USGS)</span><button class="li-x" data-close="quake" title="Close">&times;</button></div>
+      <div class="eq-form">
+        <label for="eq-mag">Min magnitude</label>
+        <select id="eq-mag"><option>2.5</option><option>3</option><option>4</option><option selected>4.5</option>
+          <option>5</option><option>6</option><option>7</option></select>
+        <label for="eq-period">Period</label>
+        <select id="eq-period"><option value="7">last 7 days</option><option value="30">last 30 days</option>
+          <option value="365" selected>last year</option><option value="1825">last 5 years</option>
+          <option value="custom">dates...</option></select>
+        <div class="eq-dates" id="eq-dates" hidden><input type="date" id="eq-start"><span>to</span><input type="date" id="eq-end"></div>
+        <label for="eq-area">Area</label>
+        <select id="eq-area"><option value="page" selected>this page's area</option><option value="view">current map view</option>
+          <option value="world">whole world</option></select>
+      </div>
+      <div class="bc-ctl"><button type="button" class="btn small primary" id="eq-apply">Show</button><span id="eq-status" class="tdim"></span></div>
+      <div class="eq-legend" id="eq-legend"></div>
+      <div class="stat-line">USGS ComCat via its FDSN event service; at most 20,000 events per request.
+        Click an event for its details.</div>
     </div>
     <div class="overlay-panel" id="rollout-panel" hidden>
       <div class="overlay-head"><span>Rollout regions</span><button class="li-x" data-close="rollout" title="Close">&times;</button></div>
@@ -3846,7 +3873,7 @@ APP_JS = r"""
   // Overlay switches stack above the globe toggle. Each click steps through
   // off -> layer -> layer + panel -> off, so the map can carry the layer
   // without its panel in the way.
-  const overlayState = {snow:0, rollout:0, colorby:0};
+  const overlayState = {snow:0, rollout:0, colorby:0, quake:0};
   const overlayButtons = {};
   function overlayControl(key, title, svg){
     return {
@@ -3877,6 +3904,11 @@ APP_JS = r"""
     `<path d="M7 14.5a4 4 0 0 1-.4-7.98A5.5 5.5 0 0 1 17.2 7a3.75 3.75 0 0 1 .3 7.5z"/>`+
     `<path d="M8 17.2 7 20M11 17.2 10 20"/>`+
     `<path d="M16 16.6v4.8M13.9 17.8l4.2 2.4M13.9 20.2l4.2-2.4"/></g></svg>`), "bottom-right");
+
+  map.addControl(overlayControl("quake", "Earthquakes (USGS)",
+    // A seismogram trace.
+    `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" `+
+    `stroke-linecap="round" stroke-linejoin="round" d="M2 12h4l2-5 2.5 11L13 4l2.5 12 1.8-6 1.2 2H22"/></svg>`), "bottom-right");
 
   // ---------- colour panel ----------
   // Its button steps: panel -> legend on the map -> off. Inside the panel the
@@ -4056,7 +4088,7 @@ APP_JS = r"""
   }
 
   // Bottom panels stack upwards in this order; on a phone only one is open.
-  const PANEL_ORDER = ["colorby","snow","rollout"];
+  const PANEL_ORDER = ["colorby","snow","rollout","quake"];
   const PHONE = window.matchMedia("(max-width: 768px)");
   function layoutPanels(){
     let bottom = 30;
@@ -4091,8 +4123,7 @@ APP_JS = r"""
     }
     if (level === 2 && PHONE.matches) {
       if (overlayState.colorby === 1) setOverlay("colorby", 2);
-      const other = key === "snow" ? "rollout" : "snow";
-      if (overlayState[other] === 2) setOverlay(other, 1);
+      ["snow","rollout","quake"].filter(k=>k !== key).forEach(k=>{ if (overlayState[k] === 2) setOverlay(k, 1); });
     }
     overlayState[key] = level;
     const on = level > 0;
@@ -4102,6 +4133,12 @@ APP_JS = r"""
       btn.title = `${btn.getAttribute("aria-label")} - ${["off","layer shown","layer and panel shown"][level]}; click for ${["layer","panel","off"][level]}`;
     }
     document.getElementById(`${key}-panel`).hidden = level < 2;
+    if (key === "quake") {
+      showQuakes(on);
+      document.getElementById("quake-panel").hidden = level < 2;
+      layoutPanels();
+      return;
+    }
     const layers = key === "snow" ? ["snow-fill","snow-line"] : ["rollout-fill","rollout-line"];
     layers.forEach(id=>{ if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); });
     if (level === 2 && key === "snow") refreshSnowPanel();
@@ -4112,6 +4149,133 @@ APP_JS = r"""
   // panel leaves its legend on the map.
   document.querySelectorAll(".overlay-panel [data-close]").forEach(b=>
     b.addEventListener("click", ()=> setOverlay(b.dataset.close, b.dataset.close === "colorby" ? 2 : 1)));
+
+
+  // ---------- USGS earthquakes ----------
+  // Fetched straight from the USGS FDSN event service (it allows any origin),
+  // so this works on the published page too. Circles grow with magnitude and
+  // are coloured by depth, the way USGS maps draw them.
+  const EQ_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query";
+  const EQ_LIMIT = 20000;
+  const NA_AREA = [-170, 14, -52, 75];
+  const EQ_DEPTHS = [[0,"#e5484d"],[35,"#ff8a4d"],[70,"#ffd24d"],[150,"#7ee787"],[300,"#4da3ff"],[700,"#a389ff"]];
+  let eqLoaded = false, eqLoading = null;
+  const eqDay = d=> d.toISOString().slice(0, 10);
+  function eqArea(){
+    const area = document.getElementById("eq-area").value;
+    if (area === "world" || (area === "page" && META.view_scope === "globe")) return null;
+    if (area === "page") return Array.isArray(META.view_bbox) ? META.view_bbox : NA_AREA;
+    const b = map.getBounds();
+    // A view across the antimeridian, or wider than the world, asks for everything.
+    if (b.getWest() < -180 || b.getEast() > 180 || b.getWest() >= b.getEast()) return null;
+    return [b.getWest(), Math.max(-90, b.getSouth()), b.getEast(), Math.min(90, b.getNorth())];
+  }
+  function eqQuery(){
+    const period = document.getElementById("eq-period").value;
+    let start, end;
+    if (period === "custom") {
+      start = document.getElementById("eq-start").value;
+      end = document.getElementById("eq-end").value;
+    } else {
+      const now = new Date();
+      start = eqDay(new Date(now.getTime() - Number(period) * 86400000));
+      end = "";
+    }
+    const q = new URLSearchParams({format:"geojson", orderby:"time", limit:String(EQ_LIMIT),
+                                   minmagnitude: document.getElementById("eq-mag").value});
+    if (start) q.set("starttime", start);
+    if (end) q.set("endtime", `${end}T23:59:59`);
+    const area = eqArea();
+    if (area) {
+      const [w, s, e, n] = area;
+      q.set("minlongitude", w.toFixed(3)); q.set("minlatitude", s.toFixed(3));
+      q.set("maxlongitude", e.toFixed(3)); q.set("maxlatitude", n.toFixed(3));
+    }
+    return q;
+  }
+  function eqLegend(){
+    const sizes = [[3,"M3"],[5,"M5"],[7,"M7"]].map(([m, t])=>{
+      // As drawn at zoom 5.
+      const r = Math.round(eqRadius(m) * 2);
+      return `<span><i style="width:${r}px;height:${r}px;background:#888"></i>${t}</span>`;
+    }).join("");
+    const depths = EQ_DEPTHS.map(([d, c], i)=>
+      `<span><i style="width:9px;height:9px;background:${c}"></i>${i < EQ_DEPTHS.length - 1 ? `${d}-${EQ_DEPTHS[i+1][0]}` : `${d}+`} km</span>`).join("");
+    document.getElementById("eq-legend").innerHTML = sizes + depths;
+  }
+  // Circle radius (px, at zoom 5) for a magnitude: area roughly tracks energy
+  // over the few magnitudes a map shows, without M7s swamping a continent.
+  function eqRadius(m){ return Math.max(1.5, 1.2 * Math.pow(1.42, m)); }
+  const EQ_RADIUS_EXPR = ["interpolate", ["exponential", 1.42], ["get", "mag"], 0, 1.2, 9, eqRadius(9)];
+  function ensureQuakeLayer(){
+    if (map.getSource("quakes")) return;
+    map.addSource("quakes", {type:"geojson", data:{type:"FeatureCollection", features:[]}});
+    const color = ["interpolate", ["linear"], ["get", "depth"]];
+    EQ_DEPTHS.forEach(([d, c])=> color.push(d, c));
+    map.addLayer({id:"quake-points", type:"circle", source:"quakes",
+      layout:{"circle-sort-key": ["get", "mag"]},
+      paint:{
+        // Smaller over a whole continent, full size once zoomed in.
+        "circle-radius": ["interpolate", ["linear"], ["zoom"],
+          1, ["*", 0.55, EQ_RADIUS_EXPR], 5, EQ_RADIUS_EXPR, 9, ["*", 1.4, EQ_RADIUS_EXPR]],
+        "circle-color": color, "circle-opacity": 0.8,
+        "circle-stroke-color": "#ffffff", "circle-stroke-width": 0.6
+      }});
+    const tip = new maplibregl.Popup({closeButton:false, closeOnClick:false, offset:8});
+    const html = f=>{
+      const p = f.properties;
+      const when = new Date(p.time).toISOString().replace("T", " ").slice(0, 19);
+      return `<div class="pop-title">M${Number(p.mag).toFixed(1)} ${p.magType || ""} &middot; ${p.place || ""}</div>`+
+        `<div class="pop-row">${when} UTC &middot; depth ${Number(p.depth).toFixed(1)} km`+
+        `${p.tsunami ? " &middot; tsunami flag" : ""}${p.alert ? ` &middot; PAGER ${p.alert}` : ""}</div>`;
+    };
+    map.on("mousemove", "quake-points", e=>{
+      map.getCanvas().style.cursor = "pointer";
+      tip.setLngLat(e.lngLat).setHTML(html(e.features[0])).addTo(map);
+    });
+    map.on("mouseleave", "quake-points", ()=>{ map.getCanvas().style.cursor = ""; tip.remove(); });
+    map.on("click", "quake-points", e=>{
+      const f = e.features[0];
+      tip.remove();
+      new maplibregl.Popup({offset:8}).setLngLat(e.lngLat)
+        .setHTML(html(f) + `<div class="pop-row"><a href="${f.properties.url}" target="_blank" rel="noopener">USGS event page</a></div>`)
+        .addTo(map);
+    });
+  }
+  async function loadQuakes(){
+    ensureQuakeLayer();
+    const status = document.getElementById("eq-status");
+    status.textContent = "loading...";
+    const mine = eqLoading = eqQuery().toString();
+    try {
+      const r = await fetch(`${EQ_URL}?${mine}`);
+      if (!r.ok) throw new Error((await r.text()).split("\n").find(l=>/Error|exceed|limit/i.test(l)) || `HTTP ${r.status}`);
+      const j = await r.json();
+      if (mine !== eqLoading) return;
+      j.features.forEach(f=>{ f.properties.depth = f.geometry.coordinates[2]; });
+      map.getSource("quakes").setData(j);
+      eqLoaded = true;
+      const n = j.features.length;
+      status.textContent = `${n.toLocaleString()} event${n === 1 ? "" : "s"}`+
+        (n >= EQ_LIMIT ? ` (the newest ${EQ_LIMIT.toLocaleString()}; raise the magnitude for all)` : "");
+    } catch (err) {
+      if (mine === eqLoading) status.textContent = `could not load: ${err.message}`;
+    }
+  }
+  function showQuakes(on){
+    if (on && !eqLoaded) loadQuakes();
+    if (map.getLayer("quake-points")) map.setLayoutProperty("quake-points", "visibility", on ? "visible" : "none");
+  }
+  document.getElementById("eq-period").addEventListener("change", e=>{
+    const custom = e.target.value === "custom";
+    document.getElementById("eq-dates").hidden = !custom;
+    if (custom && !document.getElementById("eq-start").value) {
+      document.getElementById("eq-start").value = eqDay(new Date(Date.now() - 365 * 86400000));
+      document.getElementById("eq-end").value = eqDay(new Date());
+    }
+  });
+  document.getElementById("eq-apply").addEventListener("click", ()=>{ loadQuakes(); });
+  eqLegend();
 
   function refreshSnowPanel(){
     if (!META.has_blackout) return;
@@ -4925,6 +5089,8 @@ APP_JS = r"""
       if (!hoverEnabled) return;
       if (map.getLayer("gps-points") &&
           map.queryRenderedFeatures(e.point, {layers:["gps-points"]}).length) { popup.remove(); return; }
+      if (map.getLayer("quake-points") &&
+          map.queryRenderedFeatures(e.point, {layers:["quake-points"]}).length) { popup.remove(); return; }
       cancelHoverClose();
       const p = e.features[0].properties;
       popup.setLngLat(e.lngLat).setHTML(product === "gunw" ? gunwHoverHtml(p) : `
@@ -5039,6 +5205,8 @@ APP_JS = r"""
       // A GPS marker always sits inside some frame; a click on one belongs to it.
       if (map.getLayer("gps-points") &&
           map.queryRenderedFeatures(e.point, {layers:["gps-points"]}).length) return;
+      if (map.getLayer("quake-points") &&
+          map.queryRenderedFeatures(e.point, {layers:["quake-points"]}).length) return;
       const feature = idToFeature(e.features[0].properties.id);
       if (!feature) return;
       cancelHoverClose();
