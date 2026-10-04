@@ -1,4 +1,4 @@
-site_name: NISAR_DB
+site_name: OPERA NISAR-DB
 site_description: >-
   Frame database and product-catalog generation for OPERA DISP-NISAR.
   Mirrors the burst_db workflow used for Sentinel-1 (DISP-S1).
@@ -24,15 +24,15 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -50,6 +50,7 @@ nav:
   - Frame viewer:
       - Frame viewer: frame-viewer.md
       - Viewer data sources: data-sources.md
+  - OPERA project ↗: https://www.jpl.nasa.gov/go/opera/
 
 markdown_extensions:
   - admonition
@@ -74,3 +75,20 @@ markdown_extensions:
 
 plugins:
   - search
+
+extra_css:
+  - stylesheets/opera.css
+
+extra:
+  social:
+    - icon: material/earth
+      link: https://www.jpl.nasa.gov/go/opera/
+      name: OPERA project at JPL
+    - icon: fontawesome/brands/github
+      link: https://github.com/opera-adt
+      name: OPERA on GitHub
+
+copyright: >-
+  Part of <a href="https://www.jpl.nasa.gov/go/opera/">OPERA</a> (Observational
+  Products for End-Users from Remote Sensing Analysis), a project at NASA's Jet
+  Propulsion Laboratory.
