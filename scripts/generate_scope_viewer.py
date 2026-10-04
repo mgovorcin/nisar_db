@@ -1232,6 +1232,21 @@ APP_CSS = r"""
     border:1px solid var(--border);}
   #theme-toggle{position:absolute;top:11px;right:12px;background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px;}
   #theme-toggle:hover{color:var(--accent);}
+  #edl-btn{position:absolute;top:10px;right:36px;background:none;border:none;color:var(--text-dim);cursor:pointer;
+    padding:2px 4px;line-height:0;}
+  #edl-btn:hover{color:var(--accent);}
+  #edl-btn .edl-dot{position:absolute;right:1px;bottom:1px;width:7px;height:7px;border-radius:50%;
+    background:#6b6b6b;border:1px solid var(--panel);}
+  #edl-btn.on .edl-dot{background:#2fbf71;}
+  #edl-btn.warn .edl-dot{background:#ffd24d;}
+  #edl-pop{position:absolute;top:40px;right:8px;z-index:30;width:290px;max-width:calc(100% - 16px);background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;font-weight:400;
+    box-shadow:0 4px 16px rgb(0 0 0 / .35);}
+  #edl-pop[hidden],#edl-form[hidden]{display:none;}
+  #edl-pop label{display:block;margin:6px 0 2px;color:var(--text-dim);font-size:11px;}
+  #edl-pop input{width:100%;box-sizing:border-box;}
+  #edl-pop code{font-size:10px;user-select:all;word-break:break-all;}
+  #edl-pop .bc-ctl{margin-top:8px;}
   .seg{display:flex;gap:4px;margin:6px 0 2px 0;}
   .seg .chip{flex:1;text-align:center;}
   #chart-modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;}
@@ -1290,6 +1305,7 @@ APP_CSS = r"""
     #sidebar.open{transform:none;}
     #sidebar-backdrop{position:fixed;inset:0;z-index:39;background:rgb(0 0 0 / .45);}
     #sidebar.open ~ #sidebar-backdrop{display:block;}
+    #edl-btn{right:72px;}
     #sidebar-close{display:block;position:absolute;top:9px;right:40px;background:none;border:none;
       color:var(--text-dim);font-size:22px;line-height:1;padding:2px 6px;cursor:pointer;}
     #menu-btn{display:flex;align-items:center;justify-content:center;position:absolute;top:10px;left:10px;z-index:7;
@@ -1332,6 +1348,27 @@ BODY_HTML = r"""<body>
   <div id="sidebar">
     <h1>OPERA NISAR-DB Viewer
       <button id="theme-toggle" title="Switch to the light theme">&#9788;</button>
+      <button id="edl-btn" title="Earthdata login for the QA images" aria-label="Earthdata login" aria-expanded="false">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 20 3M16 7l3 3M14 9l2 2"/></svg>
+        <span class="edl-dot"></span>
+      </button>
+      <div id="edl-pop" hidden>
+        <div class="overlay-head"><span>Earthdata login &middot; QA images</span>
+          <button class="li-x" id="edl-close" title="Close">&times;</button></div>
+        <div class="stat-line bc-helper" id="edl-status">Checking for the QA helper...</div>
+        <form id="edl-form" hidden>
+          <label for="edl-user">Earthdata username</label>
+          <input type="text" id="edl-user" autocomplete="username" spellcheck="false">
+          <label for="edl-pass">Password</label>
+          <input type="password" id="edl-pass" autocomplete="current-password">
+          <div class="bc-ctl"><button type="submit" class="btn small primary">Log in</button><span id="edl-msg"></span></div>
+        </form>
+        <div class="bc-ctl" id="edl-actions"></div>
+        <div class="stat-line">The login goes only to the QA helper on this machine, which keeps it in memory and
+          uses it only with Earthdata. The page itself never stores the password.</div>
+      </div>
       <small>North America &middot; <span id="hdr-count">0</span> frames shown</small>
       <small id="hdr-queried">CMR queried: unknown</small>
       <button id="sidebar-close" title="Close the panel" aria-label="Close the panel">&times;</button>
@@ -2797,13 +2834,15 @@ APP_JS = r"""
   // A failed check is retried after a while, so starting the helper later
   // needs no reload.
   let helperCheck = null, helperCheckedAt = 0;
-  function helperAlive(){
-    if (!helperCheck || (Date.now() - helperCheckedAt > 15000 && helperCheck.failed)) {
+  let helperAuth = null;   // where the helper's Earthdata login comes from: netrc, page or none
+  function helperAlive(force){
+    if (force || !helperCheck || (Date.now() - helperCheckedAt > 15000 && helperCheck.failed)) {
       helperCheckedAt = Date.now();
       const ctl = new AbortController();
       const timer = setTimeout(()=>ctl.abort(), 1500);
-      const check = fetch(`${qaHelper}/health`, {signal: ctl.signal}).then(r=>r.ok).catch(()=>false)
-        .then(ok=>{ clearTimeout(timer); check.failed = !ok; return ok; });
+      const check = fetch(`${qaHelper}/health`, {signal: ctl.signal})
+        .then(r=> r.ok ? r.json() : null).catch(()=>null)
+        .then(j=>{ clearTimeout(timer); helperAuth = j ? (j.auth || "netrc") : null; check.failed = !j; return Boolean(j); });
       helperCheck = check;
     }
     return helperCheck;
@@ -2868,9 +2907,10 @@ APP_JS = r"""
     document.getElementById("browse-tabs").innerHTML = tabs + (browse.loading ? `<span class="bc-wait">${browse.loading}</span>` : "");
   }
   function setHelperNote(html){ document.getElementById("browse-helper").innerHTML = html; }
+  const HELPER_CMD = "python scripts/qa_browse_server.py";
   function helperOffNote(){
     return `Wrapped phase, coherence, connected components and ionosphere need the local QA helper `+
-      `(your Earthdata login in ~/.netrc): <code>python scripts/qa_browse_server.py</code>`;
+      `(it uses the Earthdata login in ~/.netrc, or the key icon's): <code>${HELPER_CMD}</code>`;
   }
   function openBrowse(gid){
     const kind = gidKind(gid);
@@ -2912,7 +2952,9 @@ APP_JS = r"""
         if (browse !== mine) return;
         mine.loading = "";
         renderBrowseTabs();
-        setHelperNote(`The QA helper could not fetch this report: ${e.message}`);
+        setHelperNote(`The QA helper could not fetch this report: ${e.message}`+
+          (/login/i.test(e.message) ? " &middot; log in with the key icon at the top of the sidebar" : ""));
+        refreshEdl();
       });
     });
     syncBrowseMapCtl();
@@ -3008,6 +3050,91 @@ APP_JS = r"""
     const b = e.target.closest ? e.target.closest("[data-browse]") : null;
     if (b) { e.stopPropagation(); openBrowse(b.dataset.browse); }
   });
+
+
+  // ---------- Earthdata login panel ----------
+  // A web page cannot send an Earthdata login to ASF (its download endpoint
+  // refuses the cross-origin request), so the login lives with the local
+  // helper: its netrc file, or a username / password handed over here, which
+  // goes to 127.0.0.1 only. The dot on the key says whether that is set up.
+  const edlBtn = document.getElementById("edl-btn"), edlPop = document.getElementById("edl-pop");
+  function edlAction(label, action){
+    return `<button type="button" class="btn small" data-edl="${action}">${label}</button>`;
+  }
+  async function refreshEdl(){
+    const ok = await helperAlive(true);
+    const status = document.getElementById("edl-status"), form = document.getElementById("edl-form");
+    const actions = document.getElementById("edl-actions");
+    edlBtn.classList.toggle("on", ok && helperAuth !== "none");
+    edlBtn.classList.toggle("warn", ok && helperAuth === "none");
+    actions.innerHTML = "";
+    if (!ok) {
+      status.innerHTML = `The QA helper is not running. Start it on this machine (needs Python with `+
+        `<code>nisar_db[browse]</code>):<br><code>${HELPER_CMD}</code>`;
+      form.hidden = true;
+      actions.innerHTML = edlAction("Check again", "check");
+      edlBtn.title = "QA helper not running";
+      return;
+    }
+    if (helperAuth === "netrc") {
+      status.innerHTML = `Connected &middot; the helper uses the Earthdata login in <code>~/.netrc</code>.`;
+      form.hidden = true;
+      actions.innerHTML = edlAction("Use another login", "show-form");
+    } else if (helperAuth === "page") {
+      status.innerHTML = `Connected &middot; logged in from this page (kept by the helper until it stops).`;
+      form.hidden = true;
+      actions.innerHTML = edlAction("Log out", "logout");
+    } else {
+      status.innerHTML = `Connected, but the helper has no Earthdata login: no <code>~/.netrc</code> entry for `+
+        `urs.earthdata.nasa.gov. Log in here, or add one and check again.`;
+      form.hidden = false;
+      actions.innerHTML = edlAction("Check again", "check");
+    }
+    edlBtn.title = `QA helper connected (${helperAuth === "none" ? "no login" : `login from ${helperAuth === "page" ? "this page" : "~/.netrc"}`})`;
+  }
+  function setEdlOpen(open){
+    edlPop.hidden = !open;
+    edlBtn.setAttribute("aria-expanded", String(open));
+    if (open) refreshEdl();
+  }
+  edlBtn.addEventListener("click", e=>{ e.stopPropagation(); setEdlOpen(edlPop.hidden); });
+  document.getElementById("edl-close").addEventListener("click", ()=> setEdlOpen(false));
+  document.addEventListener("pointerdown", e=>{
+    if (!edlPop.hidden && !edlPop.contains(e.target) && !edlBtn.contains(e.target)) setEdlOpen(false);
+  });
+  // A new login can turn earlier failures into images.
+  function afterLoginChange(){
+    helperBlobs.clear();
+    refreshEdl();
+    if (browse) openBrowse(browse.gid);
+  }
+  document.getElementById("edl-actions").addEventListener("click", async e=>{
+    const b = e.target.closest("[data-edl]");
+    if (!b) return;
+    if (b.dataset.edl === "show-form") { document.getElementById("edl-form").hidden = false; b.remove(); }
+    else if (b.dataset.edl === "check") refreshEdl();
+    else if (b.dataset.edl === "logout") {
+      await fetch(`${qaHelper}/logout`, {method:"POST"}).catch(()=>null);
+      afterLoginChange();
+    }
+  });
+  document.getElementById("edl-form").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const user = document.getElementById("edl-user"), pass = document.getElementById("edl-pass");
+    const msg = document.getElementById("edl-msg");
+    msg.textContent = "";
+    try {
+      const r = await fetch(`${qaHelper}/login`, {method:"POST", headers:{"Content-Type":"application/json"},
+                                                  body: JSON.stringify({username: user.value.trim(), password: pass.value})});
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      pass.value = "";
+      afterLoginChange();
+    } catch (err) {
+      msg.textContent = `Could not log in: ${err.message}`;
+    }
+  });
+  refreshEdl();
 
   // ---------- browse strip in the frame popup ----------
   // One thumbnail per granule / pair left by the filters, newest last; the

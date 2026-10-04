@@ -6,9 +6,13 @@ phase, coherence, connected components and ionosphere screen are drawn only in
 the product's ``_QA_REPORT.pdf``, which sits behind the Earthdata login, and
 ASF's download endpoint does not let a web page send that login. This helper
 does it instead: when the viewer asks for a granule, it downloads the report
-(~400 kB) with the credentials in ``~/.netrc`` (machine
-``urs.earthdata.nasa.gov``), pulls the raster images out of it, and caches them
-on disk. Nothing is hosted; each image is fetched once, on request.
+(~400 kB) with your Earthdata login, pulls the raster images out of it, and
+caches them on disk. Nothing is hosted; each image is fetched once, on request.
+
+The login is the ``urs.earthdata.nasa.gov`` entry of ``$NETRC`` or
+``~/.netrc``. Without one, the viewer's Earthdata panel can hand the helper a
+username and password; they are kept in memory only and never leave this
+machine except to Earthdata itself.
 
 It also reads the grid corners of the product (a few small byte-range reads),
 so the viewer can place the images, and the public ``_LATLON`` browse, on the
@@ -17,7 +21,10 @@ map.
 Endpoints (all JSON or PNG, with permissive CORS so the published viewer can
 call it):
 
-* ``/health`` -- liveness check;
+* ``/health`` -- liveness check, and where the login comes from (``auth``:
+  ``netrc``, ``page`` or ``none``);
+* ``POST /login`` -- ``{"username": ..., "password": ...}`` from the viewer;
+* ``POST /logout`` -- forget that login and fall back to the netrc file;
 * ``/qa/<gid>/index.json`` -- the layers extracted from the report;
 * ``/qa/<gid>/<layer>.png`` -- one layer, ``?thumb=1`` for a small copy;
 * ``/corners/<gid>.json`` -- the grid's corners and lon/lat bounding box.
@@ -35,6 +42,8 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import netrc
+import os
 import re
 import threading
 from http import HTTPStatus
@@ -43,7 +52,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
-from collect_granule_flags import BLOCK_SIZE, COLLECTIONS, _session, product_url
+import requests
+from collect_granule_flags import BLOCK_SIZE, COLLECTIONS, product_url
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -79,6 +89,111 @@ MIN_SIDE = 100
 MAX_SIDE = 720
 THUMB_SIDE = 128
 VALID_CC_COLOR = (77, 210, 201, 255)
+
+
+URS_HOST = "urs.earthdata.nasa.gov"
+# Read-only, and answers 401 to a wrong username or password.
+URS_CHECK_URL = f"https://{URS_HOST}/api/users/tokens"
+
+
+class EarthdataSession(requests.Session):
+    """A session that sends the login to Earthdata's login host only.
+
+    ``requests`` drops credentials when a redirect leaves the original host,
+    and ASF's downloads redirect to ``urs.earthdata.nasa.gov`` to log in; it
+    then re-adds credentials only from a netrc file. This session adds its
+    own login on that hop, and nowhere else.
+    """
+
+    def __init__(self, login: tuple[str, str]) -> None:
+        super().__init__()
+        self.login = login
+
+    def rebuild_auth(
+        self, prepared_request: requests.PreparedRequest, response: requests.Response
+    ) -> None:
+        """Strip credentials as usual, then add the login for Earthdata."""
+        super().rebuild_auth(prepared_request, response)
+        if urlparse(prepared_request.url).hostname == URS_HOST:
+            prepared_request.prepare_auth(self.login)
+
+
+class EarthdataAuth:
+    """The Earthdata login the helper downloads with.
+
+    A login handed over by the viewer wins; otherwise the netrc file's, read
+    afresh each time so a file written after the helper started is picked up.
+    """
+
+    def __init__(self) -> None:
+        self._page: requests.Session | None = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _netrc_login() -> tuple[str, str] | None:
+        path = os.environ.get("NETRC") or Path.home() / ".netrc"
+        try:
+            entry = netrc.netrc(path).authenticators(URS_HOST)
+        except (FileNotFoundError, netrc.NetrcParseError):
+            return None
+        return (entry[0], entry[2] or "") if entry else None
+
+    @property
+    def source(self) -> str:
+        """``page``, ``netrc`` or ``none``."""
+        if self._page is not None:
+            return "page"
+        return "netrc" if self._netrc_login() else "none"
+
+    def login(self, username: str, password: str) -> None:
+        """Check ``username`` / ``password`` with Earthdata and use them.
+
+        Raises
+        ------
+        PermissionError
+            If Earthdata rejects them.
+
+        """
+        resp = requests.get(URS_CHECK_URL, auth=(username, password), timeout=30)
+        if resp.status_code == 401:
+            raise PermissionError("Earthdata rejected the username or password")
+        resp.raise_for_status()
+        with self._lock:
+            self._page = EarthdataSession((username, password))
+
+    def logout(self) -> None:
+        """Forget the viewer's login."""
+        with self._lock:
+            self._page = None
+
+    def session(self) -> requests.Session:
+        """Return a session carrying the current login.
+
+        Raises
+        ------
+        PermissionError
+            If there is no login at all.
+
+        """
+        with self._lock:
+            if self._page is not None:
+                return self._page
+        login = self._netrc_login()
+        if login is None:
+            raise PermissionError(
+                "no Earthdata login: add urs.earthdata.nasa.gov to ~/.netrc "
+                "or log in from the viewer"
+            )
+        return EarthdataSession(login)
+
+
+def _get(session: requests.Session, url: str, **kwargs: object) -> requests.Response:
+    resp = session.get(url, timeout=120, **kwargs)  # type: ignore[arg-type]
+    # A rejected login ends on the Earthdata login page rather than an error.
+    if resp.status_code == 401 or URS_HOST in resp.url:
+        raise PermissionError("Earthdata rejected the login")
+    resp.raise_for_status()
+    return resp
 
 
 def report_url(gid: str) -> str:
@@ -164,13 +279,15 @@ def extract_layers(pdf: bytes) -> dict[str, Image.Image]:
     return layers
 
 
-def grid_corners(gid: str) -> dict:
+def grid_corners(gid: str, session: requests.Session) -> dict:
     """Read a product's grid corners from its HDF5 file.
 
     Parameters
     ----------
     gid : str
         GSLC or GUNW granule id.
+    session : requests.Session
+        Session carrying the Earthdata login.
 
     Returns
     -------
@@ -187,11 +304,7 @@ def grid_corners(gid: str) -> dict:
     import numpy as np
     from pyproj import Transformer
 
-    signed = (
-        _session()
-        .get(product_url(gid), headers={"Range": "bytes=0-0"}, timeout=120)
-        .url
-    )
+    signed = _get(session, product_url(gid), headers={"Range": "bytes=0-0"}).url
     with (
         fsspec.filesystem("http").open(
             signed, block_size=BLOCK_SIZE, cache_type="blockcache"
@@ -244,8 +357,9 @@ def grid_corners(gid: str) -> dict:
 class QaCache:
     """Disk cache of extracted layers and corners, one folder per granule."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, auth: EarthdataAuth) -> None:
         self.root = root
+        self.auth = auth
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
 
@@ -265,8 +379,7 @@ class QaCache:
                 if gid.split("_")[3] == "GUNW":
                     from PIL import Image
 
-                    resp = _session().get(report_url(gid), timeout=120)
-                    resp.raise_for_status()
+                    resp = _get(self.auth.session(), report_url(gid))
                     folder.mkdir(parents=True, exist_ok=True)
                     for name, image in extract_layers(resp.content).items():
                         image.save(folder / f"{name}.png", optimize=True)
@@ -285,7 +398,7 @@ class QaCache:
         path = self.root / gid / "corners.json"
         with self._lock(f"corners:{gid}"):
             if not path.exists():
-                corners = grid_corners(gid)
+                corners = grid_corners(gid, self.auth.session())
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(corners))
         return json.loads(path.read_text())
@@ -295,14 +408,17 @@ def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
     """Build the request handler bound to ``cache``."""
 
     class Handler(BaseHTTPRequestHandler):
-        def _headers(self, status: int, content_type: str, length: int) -> None:
+        def _headers(
+            self, status: int, content_type: str, length: int, cache: bool = False
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(length))
             self.send_header("Access-Control-Allow-Origin", "*")
             # Chrome asks before a public page may reach a local server.
             self.send_header("Access-Control-Allow-Private-Network", "true")
-            self.send_header("Cache-Control", "max-age=86400")
+            # Images never change; the status (and the login it reports) does.
+            self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
             self.end_headers()
 
         def _json(self, payload: object, status: int = HTTPStatus.OK) -> None:
@@ -313,7 +429,7 @@ def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
         def do_OPTIONS(self) -> None:  # noqa: N802 - http.server naming
             self.send_response(HTTPStatus.NO_CONTENT)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST")
             self.send_header("Access-Control-Allow-Headers", "*")
             self.send_header("Access-Control-Allow-Private-Network", "true")
             self.end_headers()
@@ -323,7 +439,13 @@ def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
             parts = [p for p in url.path.split("/") if p]
             try:
                 if parts == ["health"]:
-                    self._json({"ok": True, "service": "nisar_db qa_browse_server"})
+                    self._json(
+                        {
+                            "ok": True,
+                            "service": "nisar_db qa_browse_server",
+                            "auth": cache.auth.source,
+                        }
+                    )
                 elif len(parts) == 3 and parts[0] == "qa" and GID.match(parts[1]):
                     gid, leaf = parts[1], parts[2]
                     names = cache.layers(gid)
@@ -344,7 +466,7 @@ def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
                     body = (
                         cache.root / gid / f"{name}{'_thumb' if thumb else ''}.png"
                     ).read_bytes()
-                    self._headers(HTTPStatus.OK, "image/png", len(body))
+                    self._headers(HTTPStatus.OK, "image/png", len(body), cache=True)
                     self.wfile.write(body)
                 elif len(parts) == 2 and parts[0] == "corners":
                     gid = parts[1].removesuffix(".json")
@@ -354,11 +476,50 @@ def make_handler(cache: QaCache) -> type[BaseHTTPRequestHandler]:
                     self._json(cache.corners(gid))
                 else:
                     self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            except PermissionError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
             except Exception as exc:  # noqa: BLE001 - report it to the page
                 self._json(
                     {"error": f"{type(exc).__name__}: {str(exc).split('?', 1)[0]}"},
                     HTTPStatus.BAD_GATEWAY,
                 )
+
+        def do_POST(self) -> None:  # noqa: N802 - http.server naming
+            path = urlparse(self.path).path.strip("/")
+            if path == "logout":
+                cache.auth.logout()
+                self._json({"ok": True, "auth": cache.auth.source})
+                return
+            if path != "login":
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+                username, password = str(body["username"]), str(body["password"])
+            except (ValueError, KeyError):
+                self._json(
+                    {"error": "send username and password"}, HTTPStatus.BAD_REQUEST
+                )
+                return
+            if not username or not password:
+                self._json(
+                    {"error": "send username and password"}, HTTPStatus.BAD_REQUEST
+                )
+                return
+            try:
+                cache.auth.login(username, password)
+            except PermissionError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
+                return
+            except requests.RequestException as exc:
+                self._json(
+                    {"error": f"could not reach Earthdata: {type(exc).__name__}"},
+                    HTTPStatus.BAD_GATEWAY,
+                )
+                return
+            # Never echo or log the password; the request line has no body.
+            self._json({"ok": True, "auth": cache.auth.source})
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             print(f"{self.address_string()} {format % args}", flush=True)
@@ -379,9 +540,16 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     args.cache_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer(
-        ("127.0.0.1", args.port), make_handler(QaCache(args.cache_dir))
+        ("127.0.0.1", args.port),
+        make_handler(QaCache(args.cache_dir, EarthdataAuth())),
     )
     print(f"Serving QA images on http://127.0.0.1:{args.port} (cache {args.cache_dir})")
+    source = EarthdataAuth().source
+    print(
+        "Earthdata login: ~/.netrc"
+        if source == "netrc"
+        else "No Earthdata login in ~/.netrc: log in from the viewer's key icon"
+    )
     server.serve_forever()
 
 
