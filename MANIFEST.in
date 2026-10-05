@@ -1,0 +1,14 @@
+# The source distribution carries the package, its tests and its build files.
+# The catalog data, the built viewer pages and the docs site are published on
+# their own (GitHub, Pages, release assets) and would make it ~11 MB.
+prune catalog
+prune docs
+prune scripts
+prune .github
+exclude *.html
+global-exclude *.json.gz *.parquet *.gpkg
+# Developer tooling, not needed to build or test the package.
+prune .claude
+prune skills
+prune notebooks
+exclude pixi.lock pixi.toml CLAUDE.md Makefile .pre-commit-config.yaml
