@@ -379,9 +379,12 @@ def build_view(
         "view_bbox": list(bbox) if scope == "bbox" and bbox is not None else None,
     }
 
+    progress("Reading the UNR GPS sites")
+    gps_sites = gen.load_gps_sites(gen.NGL_STATION_MAP)
+
     progress("Writing the page")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(gen.render_html(frame_data, meta, None, rollout_regions))
+    output.write_text(gen.render_html(frame_data, meta, gps_sites, rollout_regions))
     progress(
         f"Done: {meta['n_frames']} frames, {n_with} with GSLC, "
         f"{meta['n_gunw']} GUNW ({output.stat().st_size / 1e6:.1f} MB)"

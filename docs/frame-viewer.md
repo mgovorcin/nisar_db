@@ -104,7 +104,8 @@ a chosen number of days), one step at a time or cumulatively, at a chosen speed,
 with any **Color frames by** colouring. A caption over the map names the step
 and its frames; stopping restores the cycle filter and the date range. The
 button beside it fills the screen with the map alone; Esc brings the sidebar and
-the controls back.
+the controls back. The third, a moon with stars, sets what shows behind the globe: the
+theme's colour, white, black, or space (a starfield with the atmosphere's glow).
 
 **Per-granule flags.** When the viewer is built with `--granule-flags`, six
 **Color frames by** options paint each frame by a flag read from every product's
