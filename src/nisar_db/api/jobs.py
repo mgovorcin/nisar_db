@@ -602,16 +602,19 @@ class Jobs:
             rc = proc.wait()
         except OSError as exc:
             rc, job.error = -1, f"could not start: {exc}"
+        # Everything a finished job reports is in place before its state says
+        # so: readers poll ``get`` without the lock.
+        outputs = self._outputs(job)
+        error = job.error
+        if rc != 0 and not error:
+            tail = self.log_tail(job.id, 1)
+            error = tail[0] if tail else f"exit code {rc}"
         with self._lock:
             self._procs.pop(job.id, None)
-            job.returncode = rc
-            job.finished = time.time()
+            job.returncode, job.outputs, job.finished = rc, outputs, time.time()
             if job.state != "cancelled":
+                job.error = error
                 job.state = "done" if rc == 0 else "failed"
-                if rc != 0 and not job.error:
-                    tail = self.log_tail(job.id, 1)
-                    job.error = tail[0] if tail else f"exit code {rc}"
-            job.outputs = self._outputs(job)
             self._save(job)
         self._pump()
 
