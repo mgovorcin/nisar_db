@@ -55,6 +55,7 @@ pypdf = "*"
 pyproj = "*"
 fastapi = ">=0.110"
 uvicorn = ">=0.27"
+mcp = ">=2"
 
 [pypi-dependencies]
 nisar-db = { path = ".", editable = true }
