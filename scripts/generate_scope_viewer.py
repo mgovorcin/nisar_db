@@ -4717,14 +4717,35 @@ APP_JS = r"""
   // are coloured by depth, the way USGS maps draw them.
   const EQ_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query";
   const EQ_LIMIT = 20000;
-  const NA_AREA = [-170, 14, -52, 75];
   const EQ_DEPTHS = [[0,"#e5484d"],[35,"#ff8a4d"],[70,"#ffd24d"],[150,"#7ee787"],[300,"#4da3ff"],[700,"#a389ff"]];
   let eqLoaded = false, eqLoading = null;
   const eqDay = d=> d.toISOString().slice(0, 10);
+  // The page's own extent, from its frames, two degrees wider. Frames past
+  // the antimeridian (the Aleutians) are carried round to the side most of the
+  // page is on, so the box stays one piece; USGS takes longitudes from -360 to
+  // 360 for that. A page wrapping most of the way round asks for everything.
+  function pageArea(){
+    if (Array.isArray(META.view_bbox)) return META.view_bbox;
+    if (pageArea.cache !== undefined) return pageArea.cache;
+    const lons = [], lats = [];
+    const walk = c=>{ if (typeof c[0] === "number") { lons.push(c[0]); lats.push(c[1]); } else c.forEach(walk); };
+    FRAME_DATA.features.forEach(f=> walk(f.geometry.coordinates));
+    if (!lons.length) return (pageArea.cache = null);
+    const west = lons.filter(x=> x < 0).length >= lons.length / 2;
+    const shifted = lons.map(x=> west ? (x > 0 ? x - 360 : x) : (x < 0 ? x + 360 : x));
+    const w = Math.min(...shifted) - 2, e = Math.max(...shifted) + 2;
+    pageArea.cache = e - w >= 300 ? null
+      : [w, Math.max(-90, Math.min(...lats) - 2), e, Math.min(90, Math.max(...lats) + 2)];
+    return pageArea.cache;
+  }
+  // Whether a point falls in an area box whose longitudes may run past +-180.
+  function inArea(lon, lat, a){
+    return lat >= a[1] && lat <= a[3] && [-360, 0, 360].some(k=> lon + k >= a[0] && lon + k <= a[2]);
+  }
   function eqArea(){
     const area = document.getElementById("eq-area").value;
     if (area === "world" || (area === "page" && META.view_scope === "globe")) return null;
-    if (area === "page") return Array.isArray(META.view_bbox) ? META.view_bbox : NA_AREA;
+    if (area === "page") return pageArea();
     const b = map.getBounds();
     // A view across the antimeridian, or wider than the world, asks for everything.
     if (b.getWest() < -180 || b.getEast() > 180 || b.getWest() >= b.getEast()) return null;
@@ -5052,7 +5073,7 @@ APP_JS = r"""
   function voArea(){
     const area = document.getElementById("vo-area").value;
     if (area === "world" || (area === "page" && META.view_scope === "globe")) return null;
-    if (area === "page") return Array.isArray(META.view_bbox) ? META.view_bbox : NA_AREA;
+    if (area === "page") return pageArea();
     const b = map.getBounds();
     if (b.getWest() < -180 || b.getEast() > 180 || b.getWest() >= b.getEast()) return null;
     return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
@@ -5063,14 +5084,15 @@ APP_JS = r"""
     if (since !== "") f.push([">=", ["get", "yy"], Number(since)]);
     if (document.getElementById("vo-usgs").checked) f.push(["!=", ["get", "cc"], "none"]);
     const a = voArea();
-    if (a) f.push([">=", ["get", "lon"], a[0]], [">=", ["get", "lat"], a[1]], ["<=", ["get", "lon"], a[2]], ["<=", ["get", "lat"], a[3]]);
+    if (a) f.push([">=", ["get", "lat"], a[1]], ["<=", ["get", "lat"], a[3]],
+      ["any", ...[-360, 0, 360].map(k=> ["all", [">=", ["+", ["get", "lon"], k], a[0]], ["<=", ["+", ["get", "lon"], k], a[2]]])]);
     return f;
   }
   function voCount(){
     const since = document.getElementById("vo-since").value, usgs = document.getElementById("vo-usgs").checked, a = voArea();
     return VOLCANO_DATA.features.filter(({properties: p})=>
       (since === "" || p.yy >= Number(since)) && (!usgs || p.cc !== "none") &&
-      (!a || (p.lon >= a[0] && p.lat >= a[1] && p.lon <= a[2] && p.lat <= a[3]))).length;
+      (!a || inArea(p.lon, p.lat, a))).length;
   }
   function voLegend(){
     const mode = document.getElementById("vo-color").value;

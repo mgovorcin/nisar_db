@@ -773,3 +773,41 @@ def test_plate_label_sits_inside_the_plate_and_ignores_cuts() -> None:
     assert abs(lon - 15) < 0.5 and abs(lat) < 0.5
     lon, _ = by_name["Cut"]
     assert lon < 176
+
+
+def _frame(lon: float, lat: float) -> dict:
+    ring = [[lon, lat], [lon + 1, lat], [lon + 1, lat + 1], [lon, lat + 1], [lon, lat]]
+    return {"geometry": {"type": "Polygon", "coordinates": [ring]}}
+
+
+def test_page_area_reaches_the_frames_south_of_north_america() -> None:
+    """Regression: a fixed North America box (south edge 14N) hid the M7.7 off
+    Panama (7.6N) from the earthquake layer of a page whose frames reach 16S."""
+    frames = [_frame(-81, 7), _frame(-60, 70), _frame(179.2, 51)]
+    area = run_js(["pageArea"], "return pageArea();", frames)
+    # The Aleutian frame is carried west of -180, so the box stays one piece.
+    assert area == [-182.8, 5, -57, 73]
+
+
+def test_page_area_prefers_the_views_own_box() -> None:
+    area = run_js(
+        ["pageArea"],
+        "META.view_bbox = [1, 2, 3, 4]; return pageArea();",
+        [_frame(0, 0)],
+    )
+    assert area == [1, 2, 3, 4]
+
+
+def test_page_area_wrapping_the_world_asks_for_everything() -> None:
+    frames = [_frame(x, 0) for x in range(-180, 180, 30)]
+    assert run_js(["pageArea"], "return pageArea();", frames) is None
+
+
+def test_in_area_wraps_round_the_antimeridian() -> None:
+    result = run_js(
+        ["inArea"],
+        "const a = [-182.8, 5, -57, 73];"
+        " return [inArea(179.5, 52, a), inArea(-80.8, 7.6, a),"
+        " inArea(150, 52, a), inArea(-80, 80, a)];",
+    )
+    assert result == [True, True, False, False]
