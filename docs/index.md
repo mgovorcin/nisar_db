@@ -49,6 +49,13 @@ are no sub-frame burst IDs).
 - **[Tutorials → Derive blackout dates from snow cover](tutorials/snow-analysis.md)**
   — the upstream analysis: NOAA GEFS snow and temperature into per-frame
   blackout windows, and what those windows cost the stack.
+- **[Frame viewer](frame-viewer.md)** — every frame on a map, with its
+  granules, interferograms, consistent mode, blackouts, flags and QA, rebuilt
+  weekly from CMR.
+- **[REST API](api.md)** — `nisar-db serve`: catalog queries, `nisar-db`
+  commands as jobs and viewer links, locally or as a shared service.
+- **[MCP server](mcp.md)** — the same tools for AI assistants such as Claude
+  (`nisar-db mcp`).
 
 ## Install
 
@@ -108,8 +115,10 @@ Commands:
   download                Download NISAR granules/URLs from CMR.
   download-frame-db       Download the global NISAR TrackFrame database.
   label-processing-mode   Add historical/forward processing-mode labels.
+  mcp                     Serve the nisar_db tools to an AI client over MCP.
   query-catalog           Query a catalog built by build-s3-catalog.
   search                  Search for NISAR products.
+  serve                   Serve the REST API, the viewer and its helper.
 ```
 
 ## Release assets

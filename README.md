@@ -26,8 +26,18 @@ Frame database generation for OPERA products from NISAR.
 [![The OPERA NISAR-DB frame viewer: NISAR frames over North America coloured by GSLC acquisitions](https://raw.githubusercontent.com/opera-adt/nisar_db/main/docs/assets/viewer.png)](https://opera-adt.github.io/nisar_db/frame-viewer.html)
 
 **[Open the interactive frame viewer](https://opera-adt.github.io/nisar_db/frame-viewer.html)**: every
-NISAR frame over North America with its GSLC and GUNW granules, consistent mode,
-blackout dates, granule flags and QA metrics, rebuilt weekly from CMR.
+NISAR frame over North America with its GSLC and GUNW granules, rebuilt weekly
+from CMR.
+
+- **DISP-NISAR planning files**: GSLC / GUNW catalogs from CMR, consistent
+  mode, blackout and reference dates, frame bounds (the `nisar-db` CLI).
+- **Frame viewer**: colour frames by acquisitions, consistent mode, blackouts,
+  rollout, flags or QA; browse images on the map; earthquakes, volcanoes, GPS;
+  play through cycles or time.
+- **REST API** (`nisar-db serve`): catalog queries, `nisar-db` commands as jobs
+  and viewer links, locally or as a shared service with API keys.
+- **MCP server** (`nisar-db mcp`): the same tools for AI assistants such as
+  Claude.
 
 ## Documentation
 
@@ -38,6 +48,7 @@ Full documentation is published at **<https://opera-adt.github.io/nisar_db/>**, 
 - [Background: reference (reset) dates](https://opera-adt.github.io/nisar_db/background/reference-dates.html)
 - [Tutorial: build a consistent-mode database](https://opera-adt.github.io/nisar_db/tutorials/consistent-mode-database.html)
 - [Interactive NISAR frame viewer](https://opera-adt.github.io/nisar_db/frame-viewer.html)
+- [REST API](https://opera-adt.github.io/nisar_db/api.html) and [MCP server for AI assistants](https://opera-adt.github.io/nisar_db/mcp.html)
 
 To build and preview the docs locally:
 
@@ -169,6 +180,8 @@ Then open <http://127.0.0.1:8797/>. The first run installs the environment.
   ~10 GB of memory, and write a ~70 MB page.
 
 See [the frame viewer docs](docs/frame-viewer.md) for what each button does.
+`pixi run nisar_db-api` serves the same viewer together with the
+[REST API](docs/api.md) and the [MCP server](docs/mcp.md).
 
 ## Usage
 
@@ -195,8 +208,10 @@ Commands:
   download                Download NISAR granules/URLs from CMR.
   download-frame-db       Download the global NISAR TrackFrame database.
   label-processing-mode   Add historical/forward processing-mode labels.
+  mcp                     Serve the nisar_db tools to an AI client over MCP.
   query-catalog           Query a catalog built by build-s3-catalog.
   search                  Search for NISAR products.
+  serve                   Serve the REST API, the viewer and its helper.
 ```
 
 ## Release assets
