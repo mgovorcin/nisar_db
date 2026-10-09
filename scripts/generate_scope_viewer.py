@@ -779,8 +779,9 @@ def build_frame_data(
 #: Nevada Geodetic Laboratory station map; the page embeds the site table itself.
 NGL_STATION_MAP = "https://geodesy.unr.edu/NGLStationPages/gpsnetmap/GPSNetMap.html"
 
-#: Sites outside North America are dropped: the whole network is ~23k points.
-NA_BBOX = (-170.0, 14.0, -52.0, 75.0)
+#: The whole network (~23k sites) is embedded; the page narrows it to North
+#: America while its OPERA switch is on.
+WORLD_BBOX = (-180.0, -90.0, 180.0, 90.0)
 
 #: ``["SITE", lat, lon, "REFERENCE_FRAME", n]`` rows of the page's stalatlon array.
 _STATION_ROW = re.compile(
@@ -789,7 +790,7 @@ _STATION_ROW = re.compile(
 
 
 def parse_gps_sites(
-    text: str, bbox: tuple[float, float, float, float] = NA_BBOX
+    text: str, bbox: tuple[float, float, float, float] = WORLD_BBOX
 ) -> dict:
     """Turn the NGL station map page into a GeoJSON ``FeatureCollection``.
 
@@ -798,7 +799,7 @@ def parse_gps_sites(
     text : str
         Contents of :data:`NGL_STATION_MAP` (or a local copy of it).
     bbox : tuple of float
-        ``(west, south, east, north)`` filter, defaulting to North America.
+        ``(west, south, east, north)`` filter, defaulting to the whole globe.
 
     Returns
     -------
@@ -1001,12 +1002,12 @@ APP_CSS = r"""
      colours are data, not chrome, and keep their own palettes further down. */
   :root{
     --bg:#000000; --panel:#303030; --panel2:#262626; --inset:#1f1f1f; --border:#4a4a4a;
-    --text:#f5f5f5; --text-dim:#9db4c6; --accent:#76aedf; --accent2:#aad3c1;
+    --text:#f5f5f5; --text-dim:#9db4c6; --accent:#76aedf; --accent2:#aad3c1; --hi:#ffb547;
     --hairline:rgba(245,245,245,.12); --scrim:rgba(0,0,0,.8);
   }
   body.theme-light{
     --bg:#f5f5f5; --panel:#ffffff; --panel2:#f5f5f5; --inset:#ffffff; --border:#d8d8d8;
-    --text:#303030; --text-dim:#467b7b; --accent:#467b7b; --accent2:#6cbab8;
+    --text:#303030; --text-dim:#467b7b; --accent:#467b7b; --accent2:#6cbab8; --hi:#b35c00;
     --hairline:rgba(48,48,48,.14); --scrim:rgba(255,255,255,.88);
   }
   *{box-sizing:border-box;}
@@ -1078,6 +1079,30 @@ APP_CSS = r"""
   #click-ctrl{position:absolute;top:48px;right:10px;background:var(--scrim);border:1px solid var(--border);
     border-radius:6px;padding:6px 8px;z-index:5;font-size:11.5px;}
   #click-ctrl label{display:flex;align-items:center;gap:4px;color:var(--text);margin:0;cursor:pointer;}
+  #view-ctrl{position:absolute;top:86px;right:10px;z-index:5;display:flex;gap:4px;}
+  #view-ctrl button{width:30px;height:30px;display:flex;align-items:center;justify-content:center;padding:0;cursor:pointer;
+    background:var(--scrim);border:1px solid var(--border);border-radius:6px;color:var(--text);}
+  #view-ctrl button:hover{color:var(--accent);border-color:var(--accent);}
+  #view-ctrl button.active{background:var(--accent);border-color:var(--accent);color:var(--bg);}
+  #anim-pop{position:absolute;top:122px;right:10px;z-index:8;width:260px;max-width:calc(100% - 20px);background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
+  #anim-pop[hidden],#anim-pop [hidden]{display:none;}
+  #anim-pop .check-row label{margin:0;color:var(--text);}
+  #anim-pop .anim-sub{margin-left:20px;}
+  #anim-pop .anim-sub.off{opacity:.45;pointer-events:none;}
+  #anim-pop select{margin-bottom:4px;}
+  #anim-label{position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;
+    background:var(--scrim);border:1px solid var(--border);border-radius:6px;padding:5px 12px;
+    color:var(--text);font-size:14px;font-weight:600;white-space:nowrap;}
+  #anim-label[hidden]{display:none;}
+  #anim-label small{color:var(--text-dim);font-weight:400;font-size:12px;}
+  /* Presentation: the map alone, full screen; Esc brings the rest back. The
+     legend and the basemap attribution stay. */
+  body.presenting #sidebar,body.presenting #sidebar-backdrop,body.presenting #menu-btn,body.presenting #product-ctrl,
+  body.presenting #pass-ctrl,body.presenting #click-ctrl,body.presenting #view-ctrl,body.presenting #anim-pop,body.presenting #search,
+  body.presenting #top-hint,body.presenting #basemap-ctrl,body.presenting .overlay-panel,body.presenting #browse-card,
+  body.presenting .maplibregl-popup,body.presenting .maplibregl-ctrl-top-left,
+  body.presenting .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group{display:none !important;}
   #search{position:absolute;top:10px;left:186px;z-index:6;width:268px;}
   #search input{width:100%;box-sizing:border-box;background:var(--scrim);color:var(--text);border:1px solid var(--border);
     border-radius:6px;padding:6px 9px;font:inherit;font-size:11.5px;}
@@ -1110,6 +1135,7 @@ APP_CSS = r"""
   .maplibregl-ctrl-attrib{font-size:10px;}
   .pop-title{font-weight:600;margin-bottom:3px;}
   .pop-row{color:var(--text-dim);}
+  .pop-count{font-weight:700;color:var(--hi);}
   .granule-list{max-height:220px;overflow-y:auto;margin-top:6px;border-top:1px solid var(--border);padding-top:4px;}
   /* The frame popup can be dragged larger from its corner, or blown up with ⤢;
      its lists then use the room instead of keeping their own scroll height. */
@@ -1279,6 +1305,15 @@ APP_CSS = r"""
     padding:2px 4px;line-height:0;}
   #srch-btn[hidden]{display:none;}
   #srch-btn:hover,#srch-btn.armed{color:var(--accent);}
+  /* OPERA switch: the DISP planning features (blackouts, rollout, consistent mode). */
+  #opera-btn{position:absolute;top:10px;right:84px;background:none;border:none;color:var(--accent);cursor:pointer;
+    padding:2px 4px;line-height:0;}
+  #srch-btn[hidden] + #opera-btn{right:60px;}
+  #opera-btn.off{color:var(--text-dim);}
+  #opera-btn .strike{display:none;}
+  #opera-btn.off .strike{display:inline;}
+  #opera-btn:hover{color:var(--accent);}
+  body.no-opera .opera-only{display:none !important;}
   #srch-pop{position:absolute;top:40px;right:8px;z-index:30;width:290px;max-width:calc(100% - 16px);background:var(--panel);
     border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;font-weight:400;
     box-shadow:0 4px 16px rgb(0 0 0 / .35);}
@@ -1371,6 +1406,8 @@ APP_CSS = r"""
     #theme-toggle{right:40px;}
     #edl-btn{right:64px;}
     #srch-btn{right:88px;}
+    #opera-btn{right:112px;}
+    #srch-btn[hidden] + #opera-btn{right:88px;}
     #sidebar-close{display:block;position:absolute;top:9px;right:6px;background:none;border:none;
       color:var(--text-dim);font-size:22px;line-height:1;padding:2px 6px;cursor:pointer;}
     #menu-btn{display:flex;align-items:center;justify-content:center;position:absolute;top:10px;left:10px;z-index:7;
@@ -1385,6 +1422,9 @@ APP_CSS = r"""
     #basemap-ctrl{top:96px;left:10px;right:auto;flex-wrap:wrap;gap:6px;padding:5px 7px;font-size:11px;}
     #top-hint,.maplibregl-ctrl-zoom-in,.maplibregl-ctrl-zoom-out{display:none !important;}
     #click-ctrl{top:134px;left:10px;right:auto;padding:5px 7px;}
+    #view-ctrl{top:134px;right:10px;}
+    #anim-pop{top:170px;}
+    #anim-label{top:auto;bottom:calc(40px + env(safe-area-inset-bottom));font-size:12px;}
     .maplibregl-ctrl-top-left,#map.has-product .maplibregl-ctrl-top-left{top:162px;}
     .maplibregl-ctrl-bottom-right{margin-bottom:env(safe-area-inset-bottom);}
     .overlay-panel{left:8px;right:56px;width:auto;bottom:calc(8px + env(safe-area-inset-bottom));max-height:52vh;}
@@ -1417,6 +1457,11 @@ BODY_HTML = r"""<body>
       <button id="srch-btn" hidden title="Search CMR and rebuild the viewer (local)" aria-label="Search and rebuild" aria-expanded="false">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>
+      </button>
+      <button id="opera-btn" title="OPERA features on (blackouts, rollout regions, consistent mode); click to hide them"
+        aria-label="OPERA features" aria-pressed="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.5 8 12 13l9.5-5z"/><path d="m2.5 12.5 9.5 5 9.5-5"/><path d="m2.5 17 9.5 5 9.5-5"/><path class="strike" d="M3 3l18 18"/></svg>
       </button>
       <div id="srch-pop" hidden>
         <div class="overlay-head"><span>Search CMR &amp; rebuild</span>
@@ -1485,7 +1530,7 @@ BODY_HTML = r"""<body>
       </div>
 
 
-      <div class="section">
+      <div class="section opera-only">
         <div class="section-head" data-target="sec-cons"><span>Consistent Mode Summary</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-cons">
           <div class="stat-line">Consistent (mode, coverage) chosen per frame for DISP time series, aggregated over the frames currently shown.</div>
@@ -1568,7 +1613,7 @@ BODY_HTML = r"""<body>
       </div>
 
 
-      <div class="section collapsed" id="sec-rollout-wrap" hidden>
+      <div class="section collapsed opera-only" id="sec-rollout-wrap" hidden>
         <div class="section-head" data-target="sec-rollout"><span>Rollout Regions</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-rollout">
           <div class="stat-line" id="rollout-note"></div>
@@ -1578,7 +1623,7 @@ BODY_HTML = r"""<body>
       </div>
 
 
-      <div class="section collapsed" id="sec-bo-wrap" hidden>
+      <div class="section collapsed opera-only" id="sec-bo-wrap" hidden>
         <div class="section-head" data-target="sec-bo"><span>Blackout by Month</span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-bo">
           <div class="stat-line">Frames shown with each calendar month excluded by their blackout window. Dark: at least half the month; light: any part of it. Click a month to colour the map by it.</div>
@@ -1611,8 +1656,6 @@ BODY_HTML = r"""<body>
           <div class="check-row"><input type="checkbox" id="f-calval"><label for="f-calval" style="margin:0;color:var(--text)">CalVal frames only</label></div>
           <div class="check-row" id="row-land" hidden><input type="checkbox" id="f-land"><label for="f-land" style="margin:0;color:var(--text)">Land frames only</label></div>
           <div class="check-row"><input type="checkbox" id="f-selected-only"><label for="f-selected-only" style="margin:0;color:var(--text)">Show only selected frames</label></div>
-          <div class="check-row" id="row-gps" hidden><input type="checkbox" id="f-gps-show"><label for="f-gps-show" style="margin:0;color:var(--text)">Show UNR GPS sites (<span id="gps-count">0</span>)</label></div>
-          <div class="stat-line" id="gps-hint" hidden>Nevada Geodetic Laboratory sites; click one for its position time series.</div>
         </div>
       </div>
 
@@ -1620,22 +1663,16 @@ BODY_HTML = r"""<body>
 
 
       <div class="section collapsed">
-        <div class="section-head" data-target="sec-paint"><span>Paint / Select Frames</span><span class="chev">&#9660;</span></div>
+        <div class="section-head" data-target="sec-paint"><span>Select Frames <span id="count-badge">0</span></span><span class="chev">&#9660;</span></div>
         <div class="section-body" id="sec-paint">
           <div id="palette"></div>
           <div class="stat-line">Click a frame on the map to open its granule list and add/remove it from your selection with this color.</div>
+          <label style="margin-top:8px;">Selected frames</label>
+          <ul id="selected-list"></ul>
+          <div class="stat-line" id="empty-sel-hint">No frames selected yet.</div>
           <label style="margin-top:8px;">Import selection (CSV / GeoJSON / consistent-GSLC JSON)</label>
           <input type="file" id="import-file" accept=".csv,.json,.geojson" style="font-size:11px;color:var(--text-dim);">
           <div class="stat-line" id="import-status">CSV needs <code>track,frame</code> columns (optional <code>color</code>). GeoJSON matches on <code>track/frame</code> or <code>id</code>. A consistent-GSLC JSON selects every frame in its <code>data</code> block.</div>
-        </div>
-      </div>
-
-
-      <div class="section collapsed">
-        <div class="section-head" data-target="sec-sel"><span>Selected List <span id="count-badge">0</span></span><span class="chev">&#9660;</span></div>
-        <div class="section-body" id="sec-sel">
-          <ul id="selected-list"></ul>
-          <div class="stat-line" id="empty-sel-hint">No frames selected yet.</div>
         </div>
       </div>
 
@@ -1661,6 +1698,31 @@ BODY_HTML = r"""<body>
     </div>
     <div id="click-ctrl">
       <label><input type="checkbox" id="f-frame-popup" checked> Frame popup</label>
+    </div>
+    <div id="anim-pop" hidden>
+      <div class="overlay-head"><span>Play options</span><button class="li-x" id="anim-close" title="Close">&times;</button></div>
+      <div class="check-row"><input type="checkbox" id="anim-spin" checked><label for="anim-spin">Spin the globe</label></div>
+      <label>Step through</label>
+      <div class="radio-group" id="anim-mode">
+        <label><input type="radio" name="anim-mode" value="none" checked> nothing</label>
+        <label><input type="radio" name="anim-mode" value="cycles"> cycles</label>
+        <label><input type="radio" name="anim-mode" value="time"> time</label>
+      </div>
+      <div class="anim-sub off" id="anim-step-opts">
+        <div class="check-row" id="anim-days-row" hidden><label for="anim-days">Days per step</label>
+          <input type="number" id="anim-days" min="1" max="366" step="1" value="12" style="width:64px;"></div>
+        <div class="check-row"><input type="checkbox" id="anim-cum"><label for="anim-cum">Cumulative (from the start up to the current step)</label></div>
+        <div class="cb-slider">Speed <input type="range" id="anim-speed" min="0.5" max="5" step="0.5" value="1.5"><b><span id="anim-speed-val">1.5</span> s</b></div>
+      </div>
+      <label for="anim-color">Colour frames by</label>
+      <select id="anim-color"></select>
+      <div class="stat-line">Click play to start or stop, double-click it for these options. Cycles step the cycle
+        filter; time steps the date range, so counts and QA colourings follow each step. Stopping restores both.</div>
+    </div>
+    <div id="anim-label" hidden></div>
+    <div id="view-ctrl">
+      <button type="button" id="spin-btn" title="Play (double-click for options)" aria-label="Play" aria-pressed="false"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15l12.5-7.5z"/></svg></button>
+      <button type="button" id="present-btn" title="Full screen, map only (Esc to leave)" aria-label="Full screen, map only"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
     </div>
     <div id="search">
       <input id="search-q" type="search" autocomplete="off" spellcheck="false"
@@ -2265,16 +2327,25 @@ APP_JS = r"""
 
   if (META.has_blackout) document.getElementById("opt-blackout").hidden = false;
 
+  // The header's OPERA switch shows or hides the DISP planning features:
+  // blackouts, rollout regions and the consistent mode. On by default.
+  let operaOn = true;
+  const OPERA_FIELDS = new Set(["cons_mode","cons_cov","rollout","blackout_months","blackout_month"]);
+  function consText(p, prefix){
+    return operaOn ? ` &middot; ${prefix}${p.cons_mode}${p.cons_cov!=="none"?"_"+p.cons_cov:""}` : "";
+  }
+
   // ---------- blackout / reference helpers ----------
   function asArray(v){ return typeof v === "string" ? JSON.parse(v) : (v || []); }
 
   function blackoutHoverLine(p){
+    if (!operaOn) return "";
     if (!p.has_blackout) return META.has_blackout ? `<div class="pop-row">Blackout: none</div>` : "";
     return `<div class="pop-row">Blackout: <b>${p.blackout_label}</b> `+
            `(${p.blackout_months} mo, ${p.blackout_windows} yr)</div>`;
   }
   function referenceHoverLine(p){
-    if (!META.has_reference) return "";
+    if (!META.has_reference || !operaOn) return "";
     const refs = asArray(p.reference_dates);
     return `<div class="pop-row">Ref resets: ${refs.length ? refs.join(", ") : "default"}</div>`;
   }
@@ -2283,6 +2354,7 @@ APP_JS = r"""
   // or pairs (GUNW) in it; tapping a month lists them underneath. The per-year
   // windows, all alike, are in the strip's tooltip rather than a list.
   function blackoutDetailBlock(p){
+    if (!operaOn) return "";
     const counts = new Array(12).fill(0);
     monthEntries(p).forEach(en=> new Set(en.months).forEach(m=>{ if (m >= 0) counts[m]++; }));
     const what = product === "gunw" ? "pairs" : "acquisitions";
@@ -2324,7 +2396,7 @@ APP_JS = r"""
   }
 
   function rolloutLine(p){
-    if (!ROLLOUT_OPTIONS.length) return "";
+    if (!ROLLOUT_OPTIONS.length || !operaOn) return "";
     const opts = asArray(p.rollout), regions = asArray(p.rollout_regions);
     return `<div class="pop-row">Rollout: ${opts.length ? `<b>${opts.join(", ")}</b>` : "none"}`+
            `${regions.length ? ` &middot; ${regions.join(", ")}` : ""}</div>`;
@@ -3994,6 +4066,233 @@ APP_JS = r"""
   map.addControl(hoverInfoControl, "bottom-right");
   map.addControl(new maplibregl.GlobeControl(), "bottom-right");
 
+  // ---------- spin and presentation ----------
+  // The play button turns the globe west to east, a full turn in about 90 s,
+  // until it is clicked again or the map is grabbed.
+  const SPIN_DEG_PER_S = 4;
+  const spinBtn = document.getElementById("spin-btn");
+  const PLAY_SVG = spinBtn.innerHTML;
+  const PAUSE_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">`+
+    `<path fill="currentColor" d="M6.5 4.5h4v15h-4zM13.5 4.5h4v15h-4z"/></svg>`;
+  let spinning = false, spinLast = 0;
+  function spinStep(t){
+    if (!spinning) return;
+    const dt = spinLast ? Math.min(0.1, (t - spinLast) / 1000) : 0;
+    spinLast = t;
+    const c = map.getCenter();
+    map.jumpTo({center: [((c.lng - SPIN_DEG_PER_S * dt + 540) % 360) - 180, c.lat]});
+    requestAnimationFrame(spinStep);
+  }
+  function setSpin(on){
+    spinning = on;
+    spinLast = 0;
+    if (on) requestAnimationFrame(spinStep);
+    syncPlayBtn();
+  }
+
+  // Play can also step through the page's record: by cycle (the cycle filter,
+  // which hides frames without that cycle) or by time (the date range, in
+  // windows of a chosen number of days, which recolours the counts). Either
+  // can run cumulatively from the start.
+  const animStep = {timer: null, mode: "none", list: [], i: -1, saved: null};
+  const cycleBox = document.getElementById("f-cycle");
+  const dateFrom = document.getElementById("f-date-start"), dateTo = document.getElementById("f-date-end");
+  const animLabel = document.getElementById("anim-label");
+  const isPlaying = ()=> spinning || animStep.timer !== null;
+  const animMode = ()=> document.querySelector('input[name="anim-mode"]:checked').value;
+  function syncPlayBtn(){
+    const on = isPlaying();
+    spinBtn.classList.toggle("active", on);
+    spinBtn.innerHTML = on ? PAUSE_SVG : PLAY_SVG;
+    spinBtn.title = on ? "Stop (double-click for options)" : "Play (double-click for options)";
+    spinBtn.setAttribute("aria-pressed", String(on));
+  }
+  function cycleList(){
+    const seen = new Set();
+    FRAME_DATA.features.forEach(f=> asArray(product === "gunw" ? f.properties.gunw_cycles : f.properties.gslc_cycles)
+      .forEach(c=> seen.add(c)));
+    return [...seen].sort((a, b)=> a - b);
+  }
+  // A GUNW pair counts in the cycles of both its dates.
+  const cycleSpanCache = new Map();
+  function cycleSpan(c){
+    const key = `${product}:${c}`;
+    if (!cycleSpanCache.has(key)) {
+      let lo = null, hi = null;
+      const see = d=>{ if (!d) return; if (!lo || d < lo) lo = d; if (!hi || d > hi) hi = d; };
+      FRAME_DATA.features.forEach(f=>{
+        const p = f.properties;
+        if (product === "gunw") asArray(p.gunw_ifgs).forEach(g=>{
+          if (!g.cyc) return;
+          if (g.cyc[0] === c) see(g.ref);
+          if (g.cyc[1] === c) see(g.sec);
+        });
+        else (Array.isArray(p.granules) ? p.granules : []).forEach(g=>{ if (g.cycle === c) see(g.date); });
+      });
+      cycleSpanCache.set(key, [lo, hi]);
+    }
+    return cycleSpanCache.get(key);
+  }
+  // Windows of `days` days from the product's first date to its last.
+  function timeWindows(days){
+    let lo = Infinity, hi = -Infinity;
+    const see = d=>{ const t = Date.parse(`${d}T00:00:00Z`); if (isFinite(t)) { lo = Math.min(lo, t); hi = Math.max(hi, t); } };
+    FRAME_DATA.features.forEach(f=>{
+      const p = f.properties;
+      if (product === "gunw") asArray(p.gunw_ifgs).forEach(g=>{ see(g.ref); see(g.sec); });
+      else (Array.isArray(p.granules) ? p.granules : []).forEach(g=> see(g.date));
+    });
+    const out = [];
+    if (!isFinite(lo)) return out;
+    const iso = t=> new Date(t).toISOString().slice(0, 10);
+    for (let t = lo; t <= hi; t += days * DAY_MS) out.push([iso(t), iso(Math.min(hi, t + (days - 1) * DAY_MS))]);
+    return out;
+  }
+  function withData(){
+    const key = product === "gunw" ? "gunw_count_sel" : "gslc_count_sel";
+    return shownFeatures.filter(f=> Number(f.properties[key]) > 0).length;
+  }
+  function showStep(){
+    const list = animStep.list, cur = list[animStep.i];
+    const cum = document.getElementById("anim-cum").checked;
+    const span = (a, b)=> a ? ` <small>${a}${b && b !== a ? ` &ndash; ${b}` : ""}</small>` : "";
+    if (animStep.mode === "cycles") {
+      cycleBox.value = cum ? `${list[0]}-${cur}` : String(cur);
+      applyFilters();
+      const [lo, hi] = cum ? [cycleSpan(list[0])[0], cycleSpan(cur)[1]] : cycleSpan(cur);
+      animLabel.innerHTML = `${cum && cur !== list[0] ? `Cycles ${list[0]}&ndash;${cur}` : `Cycle ${cur}`}${span(lo, hi)} `+
+        `<small>&middot; ${shownFeatures.length} frames</small>`;
+    } else {
+      const a = cum ? list[0][0] : cur[0], b = cur[1];
+      dateFrom.value = a; dateTo.value = b;
+      applyFilters();
+      animLabel.innerHTML = `${a} &ndash; ${b} <small>&middot; ${cum ? "since the start" : `${document.getElementById("anim-days").value} d`}`+
+        ` &middot; ${withData()} frames with data</small>`;
+    }
+    animLabel.hidden = false;
+  }
+  function nextStep(){
+    if (!animStep.list.length) return;
+    animStep.i = (animStep.i + 1) % animStep.list.length;
+    showStep();
+  }
+  function stepDelay(){ return Number(document.getElementById("anim-speed").value) * 1000; }
+  function startSteps(){
+    animStep.mode = animMode();
+    if (animStep.mode === "none") return;
+    const days = Math.max(1, Math.round(Number(document.getElementById("anim-days").value) || 12));
+    animStep.list = animStep.mode === "cycles" ? cycleList() : timeWindows(days);
+    if (!animStep.list.length) return;
+    animStep.saved = {cycle: cycleBox.value, from: dateFrom.value, to: dateTo.value};
+    // Each mode drives one filter; the other is cleared so it does not narrow the steps.
+    if (animStep.mode === "cycles") { dateFrom.value = ""; dateTo.value = ""; } else cycleBox.value = "";
+    animStep.i = -1;
+    nextStep();
+    animStep.timer = setInterval(nextStep, stepDelay());
+  }
+  function stopSteps(){
+    if (animStep.timer === null) return;
+    clearInterval(animStep.timer);
+    animStep.timer = null;
+    const s = animStep.saved || {cycle: "", from: "", to: ""};
+    cycleBox.value = s.cycle; dateFrom.value = s.from; dateTo.value = s.to;
+    animStep.saved = null;
+    animLabel.hidden = true;
+    applyFilters();
+  }
+  function restartSteps(){
+    if (animStep.timer === null) return;
+    stopSteps();
+    startSteps();
+    syncPlayBtn();
+  }
+  function play(){
+    const spin = document.getElementById("anim-spin").checked;
+    const stepping = animMode() !== "none";
+    if (spin || !stepping) setSpin(true);
+    if (stepping) startSteps();
+    syncPlayBtn();
+  }
+  function stopPlay(){
+    setSpin(false);
+    stopSteps();
+    syncPlayBtn();
+  }
+
+  // One click plays or stops; a double click opens the options instead, so the
+  // single click waits to see whether a second follows.
+  const animPop = document.getElementById("anim-pop");
+  let playClick = null;
+  spinBtn.addEventListener("click", ()=>{
+    if (playClick) return;
+    playClick = setTimeout(()=>{ playClick = null; if (isPlaying()) stopPlay(); else play(); }, 250);
+  });
+  // The colourings on offer change with the product and the OPERA switch.
+  function fillAnimColors(){
+    const sel = document.getElementById("anim-color");
+    const cur = document.getElementById("color-by").value;
+    sel.innerHTML = [...offeredColorings()].map(([v, t])=>
+      `<option value="${v}"${v === cur ? " selected" : ""}>${t}</option>`).join("");
+  }
+  function openAnimPop(){
+    fillAnimColors();
+    animPop.hidden = false;
+  }
+  spinBtn.addEventListener("dblclick", e=>{
+    e.preventDefault();
+    clearTimeout(playClick);
+    playClick = null;
+    if (animPop.hidden) openAnimPop(); else animPop.hidden = true;
+  });
+  // Touch screens rarely send a double click; a long press opens the options too.
+  spinBtn.addEventListener("contextmenu", e=>{ e.preventDefault(); openAnimPop(); });
+  document.getElementById("anim-close").addEventListener("click", ()=>{ animPop.hidden = true; });
+  document.getElementById("anim-color").addEventListener("change", e=> selectColorBy(e.target.value));
+  document.getElementById("anim-mode").addEventListener("change", ()=>{
+    const mode = animMode();
+    document.getElementById("anim-step-opts").classList.toggle("off", mode === "none");
+    document.getElementById("anim-days-row").hidden = mode !== "time";
+    if (!isPlaying()) return;
+    stopSteps();
+    startSteps();
+    syncPlayBtn();
+  });
+  document.getElementById("anim-spin").addEventListener("change", e=>{
+    if (isPlaying()) setSpin(e.target.checked);
+  });
+  document.getElementById("anim-cum").addEventListener("change", ()=>{ if (animStep.timer !== null) showStep(); });
+  document.getElementById("anim-days").addEventListener("change", restartSteps);
+  document.getElementById("anim-speed").addEventListener("input", e=>{
+    document.getElementById("anim-speed-val").textContent = e.target.value;
+    if (animStep.timer === null) return;
+    clearInterval(animStep.timer);
+    animStep.timer = setInterval(nextStep, stepDelay());
+  });
+  // Another product has other cycles and dates: start the stepping over, once
+  // the product switch (registered later) has run.
+  document.getElementById("product-ctrl").addEventListener("click", ()=> setTimeout(()=>{ restartSteps(); fillAnimColors(); }, 0));
+  ["mousedown", "touchstart", "wheel"].forEach(ev=> map.on(ev, ()=>{ if (spinning) setSpin(false); }));
+
+  // Full screen with the map alone. Leaving the browser's full screen (Esc)
+  // brings the sidebar and the controls back; where full screen is refused,
+  // Esc still does.
+  function setPresenting(on){
+    document.body.classList.toggle("presenting", on);
+    map.resize();
+  }
+  document.getElementById("present-btn").addEventListener("click", ()=>{
+    setPresenting(true);
+    const req = document.documentElement.requestFullscreen;
+    if (req) req.call(document.documentElement).catch(()=>{});
+  });
+  document.addEventListener("fullscreenchange", ()=>{
+    if (!document.fullscreenElement) setPresenting(false);
+    else map.resize();
+  });
+  document.addEventListener("keydown", e=>{
+    if (e.key === "Escape" && document.body.classList.contains("presenting") && !document.fullscreenElement) setPresenting(false);
+  });
+
   // Overlay switches stack above the globe toggle. Each click steps through
   // off -> layer -> layer + panel -> off, so the map can carry the layer
   // without its panel in the way.
@@ -4243,9 +4542,9 @@ APP_JS = r"""
     `d="M12 3a9 9 0 0 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.7 17 3 12 3z"/>`+
     `<circle cx="7.5" cy="11.5" r="1.4" fill="currentColor"/><circle cx="10" cy="7.4" r="1.4" fill="currentColor"/>`+
     `<circle cx="14.6" cy="7.4" r="1.4" fill="currentColor"/><circle cx="17.2" cy="11" r="1.4" fill="currentColor"/></svg>`), "bottom-right");
-  // Plates, earthquakes and volcanoes: one box above the frame colouring,
-  // set apart from the frame tools below it.
-  map.addControl(overlayGroupControl([
+  // Plates, earthquakes, volcanoes and GPS sites: one box above the frame
+  // colouring, set apart from the frame tools below it.
+  const geoGroup = overlayGroupControl([
     {key:"plates", title:"Tectonic plates", svg:
     // Same glyph as the geepers viewer's plates tool.
     `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
@@ -4259,7 +4558,41 @@ APP_JS = r"""
     `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
     `stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 20.5h19l-6.2-9.2h-6.6z"/><path d="M10.5 11.3 12 13l1.5-1.7"/>`+
     `<path d="M12 8.5c-.8-1.1-.3-2.4.8-2.9.4-1.3 2-1.8 3-1M9 7.5c-1-.4-1.3-1.6-.6-2.4"/></g></svg>`}
-  ], "geo-group"), "bottom-right");
+  ], "geo-group");
+  map.addControl(geoGroup, "bottom-right");
+  // UNR GPS sites switch on and off: North America's while the OPERA switch is
+  // on, the whole network while it is off.
+  let gpsOn = false;
+  const GPS_NA_BBOX = [-170, 14, -52, 75];
+  UNR_GPS_DATA.features.forEach(f=>{
+    const [x, y] = f.geometry.coordinates;
+    f.properties.na = x >= GPS_NA_BBOX[0] && y >= GPS_NA_BBOX[1] && x <= GPS_NA_BBOX[2] && y <= GPS_NA_BBOX[3];
+  });
+  const gpsFilter = ()=> operaOn ? ["==", ["get", "na"], true] : null;
+  const gpsShown = ()=> operaOn ? UNR_GPS_DATA.features.filter(f=>f.properties.na).length : UNR_GPS_DATA.features.length;
+  let syncGps = ()=>{};
+  if (UNR_GPS_DATA.features.length) {
+    const gpsBtn = document.createElement("button");
+    gpsBtn.type = "button"; gpsBtn.className = "overlay-btn";
+    gpsBtn.setAttribute("aria-label", "UNR GPS sites");
+    // A GNSS antenna on its mast, sending out signal arcs.
+    gpsBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" `+
+      `stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v10M8.5 20h7"/><circle cx="12" cy="8" r="1.6" fill="currentColor"/>`+
+      `<path d="M8.6 4.6a4.8 4.8 0 0 0 0 6.8M15.4 4.6a4.8 4.8 0 0 1 0 6.8"/></g></svg>`;
+    syncGps = ()=>{
+      gpsBtn.classList.toggle("active", gpsOn);
+      gpsBtn.title = `UNR GPS sites (${gpsShown().toLocaleString()}, ${operaOn ? "North America" : "globe"}) - `+
+        `${gpsOn ? "shown; click to hide" : "off; click to show"}. Click a site for its position time series.`;
+      gpsBtn.setAttribute("aria-pressed", String(gpsOn));
+    };
+    gpsBtn.addEventListener("click", ()=>{
+      gpsOn = !gpsOn;
+      if (map.getLayer("gps-points")) map.setLayoutProperty("gps-points", "visibility", gpsOn ? "visible" : "none");
+      syncGps();
+    });
+    syncGps();
+    geoGroup._wrap.appendChild(gpsBtn);
+  }
 
   function setOverlay(key, level){
     if (key === "colorby") {
@@ -4964,8 +5297,8 @@ APP_JS = r"""
     if (!rows) rows = `<div class="granule-row">No GSLC granules in CMR for this frame.</div>`;
     return `
       <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
-      <div class="pop-row">Pass: ${p.passDirection} &middot; consistent: ${p.cons_mode}${p.cons_cov!=="none"?"_"+p.cons_cov:""}</div>
-      <div class="pop-row">GSLC granules in CMR: ${p.gslc_count} &middot; ${p.n_modes} mode(s) &middot; ${p.n_full}F / ${p.n_partial}P</div>
+      <div class="pop-row">Pass: ${p.passDirection}${consText(p, "consistent: ")}</div>
+      <div class="pop-row">GSLC granules in CMR: <b class="pop-count">${p.gslc_count}</b> &middot; ${p.n_modes} mode(s) &middot; ${p.n_full}F / ${p.n_partial}P</div>
       ${duplicateRow(p)}
       ${selectionRow(p)}
       ${qaSummaryRow(p, false)}
@@ -5038,7 +5371,7 @@ APP_JS = r"""
   function gunwSummaryRows(p){
     if (!p.gunw_count) return `<div class="pop-row">No GUNW interferograms in the catalog for this frame.</div>`;
     const span = p.gunw_dt_max !== p.gunw_dt_min ? `${p.gunw_dt_min}&ndash;${p.gunw_dt_max}` : `${p.gunw_dt_min}`;
-    return `<div class="pop-row">GUNW interferograms: ${p.gunw_count} &middot; ${p.gunw_pairs} pair(s) &middot; mode ${asArray(p.gunw_modes).join(", ")}</div>`+
+    return `<div class="pop-row">GUNW interferograms: <b class="pop-count">${p.gunw_count}</b> &middot; ${p.gunw_pairs} pair(s) &middot; mode ${asArray(p.gunw_modes).join(", ")}</div>`+
            `<div class="pop-row">Temporal baselines: ${span} days &middot; ${asArray(p.gunw_pols).join(", ")}</div>`;
   }
 
@@ -5290,7 +5623,7 @@ APP_JS = r"""
   const DUP_ROW = "duplicates";
 
   function blackoutWindowsOf(p){
-    return (p && p.has_blackout ? asArray(p.blackout_ranges) : []).map(r=>{
+    return (operaOn && p && p.has_blackout ? asArray(p.blackout_ranges) : []).map(r=>{
       const [a, b] = String(r).split("->").map(s=>s.trim());
       return {a, b, ta: Date.parse(`${a}T00:00:00Z`), tb: Date.parse(`${b}T23:59:59Z`)};
     }).filter(w=>isFinite(w.ta) && isFinite(w.tb));
@@ -5638,8 +5971,8 @@ APP_JS = r"""
       const p = e.features[0].properties;
       popup.setLngLat(e.lngLat).setHTML(product === "gunw" ? gunwHoverHtml(p) : `
         <div class="pop-title">Frame ${p.frame_idx} &middot; Track ${p.track} / Frame ${p.frame}</div>
-        <div class="pop-row">Pass: ${p.passDirection} &middot; ${p.cons_mode}${p.cons_cov!=="none"?"_"+p.cons_cov:""}</div>
-        <div class="pop-row">GSLC granules in CMR: ${p.gslc_count} &middot; ${p.n_modes} mode(s)</div>
+        <div class="pop-row">Pass: ${p.passDirection}${consText(p, "")}</div>
+        <div class="pop-row">GSLC granules in CMR: <b class="pop-count">${p.gslc_count}</b> &middot; ${p.n_modes} mode(s)</div>
         ${duplicateRow(p)}
         ${selectionRow(p)}
         ${rolloutLine(p)}
@@ -5658,24 +5991,19 @@ APP_JS = r"""
     map.on("mouseleave", "frames-fill", ()=>{ map.getCanvas().style.cursor = ""; scheduleHoverClose(); });
 
     // ---------- UNR GPS sites ----------
-    // Hidden until asked for: 10k markers over the frames is a lot of ink.
+    // Hidden until asked for: tens of thousands of markers over the frames is a lot of ink.
     if (UNR_GPS_DATA.features.length) {
       map.addSource("unr-gps", { type:"geojson", data: UNR_GPS_DATA });
       map.addLayer({
         id:"gps-points", type:"circle", source:"unr-gps",
         minzoom: 0,
-        layout:{ visibility:"none" },
+        layout:{ visibility: gpsOn ? "visible" : "none" },
+        filter: gpsFilter(),
         paint:{
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 2, 1.5, 6, 3, 12, 6],
           "circle-color": "#ff6fc7",
           "circle-stroke-color": "#0f1418", "circle-stroke-width": 1
         }
-      });
-      document.getElementById("gps-count").textContent = UNR_GPS_DATA.features.length;
-      document.getElementById("row-gps").hidden = false;
-      document.getElementById("gps-hint").hidden = false;
-      document.getElementById("f-gps-show").addEventListener("change", (e)=>{
-        map.setLayoutProperty("gps-points", "visibility", e.target.checked ? "visible" : "none");
       });
 
       const gpsHoverPopup = new maplibregl.Popup({ closeButton:false, closeOnClick:false });
@@ -5788,9 +6116,40 @@ APP_JS = r"""
     const opts = Array.from(document.querySelectorAll("#color-by option"));
     if (!colorByAvailable) colorByAvailable = new Set(opts.filter(o=>!o.hidden).map(o=>o.value));
     opts.forEach(o=>{
-      o.hidden = !colorByAvailable.has(o.value) || (o.dataset.product && o.dataset.product !== product);
+      o.hidden = !colorByAvailable.has(o.value) || (o.dataset.product && o.dataset.product !== product) ||
+        (!operaOn && OPERA_FIELDS.has(o.value));
     });
   }
+
+  // Off, the switch closes the blackout and rollout overlays and hides their
+  // map buttons, clears the rollout filter and leaves an OPERA colouring for
+  // the product's count; the sidebar sections go with the body class.
+  const operaBtn = document.getElementById("opera-btn");
+  function setOpera(on){
+    operaOn = on;
+    document.body.classList.toggle("no-opera", !on);
+    operaBtn.classList.toggle("off", !on);
+    operaBtn.setAttribute("aria-pressed", String(on));
+    operaBtn.title = on ? "OPERA features on (blackouts, rollout regions, consistent mode); click to hide them"
+                        : "OPERA features off; click to show blackouts, rollout regions and consistent mode";
+    ["snow","rollout"].forEach(k=>{
+      if (!on && overlayState[k]) setOverlay(k, 0);
+      if (overlayButtons[k]) overlayButtons[k].parentElement.style.display = on ? "" : "none";
+    });
+    if (!on) {
+      activeRollout.clear();
+      if (OPERA_FIELDS.has(gslcColorBy)) gslcColorBy = "gslc_count";
+      const sel = document.getElementById("color-by");
+      if (OPERA_FIELDS.has(sel.value)) sel.value = product === "gunw" ? "gunw_count" : "gslc_count";
+    }
+    syncColorByOptions();
+    if (map.getLayer("gps-points")) map.setFilter("gps-points", gpsFilter());
+    syncGps();
+    fillAnimColors();
+    document.querySelectorAll(".maplibregl-popup").forEach(el=>el.remove());
+    applyFilters();
+  }
+  operaBtn.addEventListener("click", ()=> setOpera(!operaOn));
   document.getElementById("product-ctrl").addEventListener("click", (e)=>{
     const btn = e.target.closest("[data-product]");
     if (!btn || btn.dataset.product === product) return;

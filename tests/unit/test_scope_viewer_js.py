@@ -35,6 +35,7 @@ let showFlags = false;
 let showQa = false;
 let qaPairColor = "";
 const META = {};
+let operaOn = true;
 // The plots size themselves to the chart card on the page; with no page here
 // they get the card's default size.
 function chartWidth(){ return Math.min(720, Math.max(420, window.innerWidth - 140)); }
@@ -194,6 +195,19 @@ def test_plot_shades_blackout_windows_clipped_to_the_plotted_span() -> None:
         " none: none.includes('chart-blackout')};",
     )
     assert result == {"bands": 1, "legend": True, "none": False}
+
+
+def test_plot_drops_blackout_windows_with_the_opera_switch_off() -> None:
+    result = run_js(
+        CHART,
+        "const p = {has_blackout: true, blackout_label: 'Sep-May', blackout_ranges:"
+        " JSON.stringify(['2025-09-28 -> 2026-05-26'])};"
+        " operaOn = false;"
+        " const svg = modeTimelineSvg(GRANULES, p);"
+        " return {bands: svg.includes('chart-blackout'),"
+        " legend: svg.includes('blackout (')};",
+    )
+    assert result == {"bands": False, "legend": False}
 
 
 IFGS = [
