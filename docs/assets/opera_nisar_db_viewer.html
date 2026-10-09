@@ -96,6 +96,11 @@
   #anim-pop{position:absolute;top:122px;right:10px;z-index:8;width:260px;max-width:calc(100% - 20px);background:var(--panel);
     border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;box-shadow:0 4px 16px rgb(0 0 0 / .35);}
   #anim-pop[hidden],#anim-pop [hidden]{display:none;}
+  /* What shows behind the globe: the canvas is transparent off the globe. */
+  #map.sky-white{background:#ffffff;}
+  #map.sky-black{background:#000000;}
+  #map.sky-space{background-color:#01030a;background-repeat:repeat,no-repeat;
+    background-size:512px 512px,100% 100%;}
   #anim-pop .check-row label{margin:0;color:var(--text);}
   #anim-pop .anim-sub{margin-left:20px;}
   #anim-pop .anim-sub.off{opacity:.45;pointer-events:none;}
@@ -730,6 +735,7 @@
     <div id="anim-label" hidden></div>
     <div id="view-ctrl">
       <button type="button" id="spin-btn" title="Play (double-click for options)" aria-label="Play" aria-pressed="false"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15l12.5-7.5z"/></svg></button>
+      <button type="button" id="sky-btn" title="Behind the globe: theme; click for white" aria-label="Background behind the globe"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/><path d="M17 3v3M15.5 4.5h3" /><path d="M21 8.5v1.6M20.2 9.3h1.6"/></svg></button>
       <button type="button" id="present-btn" title="Full screen, map only (Esc to leave)" aria-label="Full screen, map only"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
     </div>
     <div id="search">
@@ -1357,10 +1363,18 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     buildChips("chips-crid", gunw ? allCridsGunw : allCridsGslc, cridSet, Array.from(cridSet));
     document.getElementById("chips-title").textContent = `${gunw ? "GUNW" : "GSLC"} Mode / Polarization / CRID`;
   }
-  function buildGslcChips(){
-    Object.values(activeChips).forEach(s=>s.clear());
+  // The DISP set is an OPERA default: with the OPERA switch off the GSLC
+  // chips open on the whole archive instead.
+  function setGslcDefaultChips(disp){
+    activeChips.gslcMode.clear();
+    activeChips.gslcPol.clear();
+    if (!disp) return;
     DEFAULT_GSLC_MODES.filter(v=>allModesGslc.includes(v)).forEach(v=>activeChips.gslcMode.add(v));
     DEFAULT_GSLC_POLS.filter(v=>allPolsGslc.includes(v)).forEach(v=>activeChips.gslcPol.add(v));
+  }
+  function buildGslcChips(disp = true){
+    Object.values(activeChips).forEach(s=>s.clear());
+    setGslcDefaultChips(disp);
     renderChips();
   }
   buildGslcChips();
@@ -2856,7 +2870,7 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     document.getElementById("f-date-start").value = "";
     document.getElementById("f-date-end").value = "";
     activeRollout.clear();
-    buildGslcChips();
+    buildGslcChips(operaOn);
     applyFilters();
   });
 
@@ -3363,6 +3377,48 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
   document.addEventListener("keydown", e=>{
     if (e.key === "Escape" && document.body.classList.contains("presenting") && !document.fullscreenElement) setPresenting(false);
   });
+
+  // ---------- background behind the globe ----------
+  // Theme (the page colour), white, black, or space: a starfield drawn once
+  // into a tile, with the atmosphere's glow around the globe.
+  const SKIES = ["theme", "white", "black", "space"];
+  const SKY_LABEL = {theme:"theme", white:"white", black:"black", space:"space"};
+  let sky = "theme", starTile = null;
+  function starfield(){
+    if (starTile) return starTile;
+    const n = 512, c = document.createElement("canvas");
+    c.width = c.height = n;
+    const ctx = c.getContext("2d");
+    // A fixed seed keeps the stars in place from one load to the next.
+    let seed = 7;
+    const rnd = ()=> (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 260; i++) {
+      const r = rnd() < 0.92 ? 0.5 + rnd() * 0.6 : 1.1 + rnd() * 0.7;
+      ctx.globalAlpha = 0.35 + rnd() * 0.65;
+      ctx.fillStyle = rnd() < 0.15 ? "#cfe0ff" : rnd() < 0.1 ? "#ffe6c8" : "#ffffff";
+      ctx.beginPath(); ctx.arc(rnd() * n, rnd() * n, r, 0, Math.PI * 2); ctx.fill();
+    }
+    starTile = c.toDataURL("image/png");
+    return starTile;
+  }
+  const skyBtn = document.getElementById("sky-btn");
+  const mapEl = document.getElementById("map");
+  function setSky(next){
+    sky = next;
+    SKIES.forEach(s=> mapEl.classList.toggle(`sky-${s}`, s === next && s !== "theme"));
+    mapEl.style.backgroundImage = next === "space"
+      ? `url(${starfield()}), radial-gradient(ellipse at 50% 50%, #0d1a38 0%, #050a1a 45%, #01030a 80%)` : "";
+    try {
+      map.setSky(next === "space"
+        ? {"atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 5, 1, 7, 0]}
+        : {"atmosphere-blend": 0});
+    } catch (err) { /* a style still loading takes the sky on its next change */ }
+    const after = SKIES[(SKIES.indexOf(next) + 1) % SKIES.length];
+    skyBtn.title = `Behind the globe: ${SKY_LABEL[next]}; click for ${SKY_LABEL[after]}`;
+    skyBtn.classList.toggle("active", next !== "theme");
+  }
+  skyBtn.addEventListener("click", ()=> setSky(SKIES[(SKIES.indexOf(sky) + 1) % SKIES.length]));
+  map.on("load", ()=>{ if (sky !== "theme") setSky(sky); });
 
   // Overlay switches stack above the globe toggle. Each click steps through
   // off -> layer -> layer + panel -> off, so the map can carry the layer
@@ -5213,6 +5269,8 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
       const sel = document.getElementById("color-by");
       if (OPERA_FIELDS.has(sel.value)) sel.value = product === "gunw" ? "gunw_count" : "gslc_count";
     }
+    setGslcDefaultChips(on);
+    renderChips();
     syncColorByOptions();
     if (map.getLayer("gps-points")) map.setFilter("gps-points", gpsFilter());
     syncGps();
