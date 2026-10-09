@@ -25,6 +25,9 @@ create-consistent = "nisar-db create-consistent"
 # Its cache (QA images, grid corners, rebuilt views, the TrackFrame database)
 # stays in the checkout, out of a home directory that may be small.
 nisar_db-ui = "python scripts/qa_browse_server.py --cache-dir .qa_helper_cache"
+# The REST API with the viewer and its helper (docs at /docs); `--mode shared`
+# serves other machines, with API keys. See docs/api.md.
+nisar_db-api = "nisar-db serve --cache-dir .qa_helper_cache"
 
 # Runtime, as in requirements.txt.
 [dependencies]
@@ -50,6 +53,8 @@ h5py = "*"
 pillow = "*"
 pypdf = "*"
 pyproj = "*"
+fastapi = ">=0.110"
+uvicorn = ">=0.27"
 
 [pypi-dependencies]
 nisar-db = { path = ".", editable = true }
@@ -67,6 +72,8 @@ python-build = "*"
 twine = "*"
 conda-build = "*"
 anaconda-client = "*"
+httpx = ">=0.25"
+httpx2 = ">=2.13.1,<3"
 
 [environments]
 default = { solve-group = "default" }
