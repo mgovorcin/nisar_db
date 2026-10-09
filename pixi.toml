@@ -50,6 +50,8 @@ h5py = "*"
 pillow = "*"
 pypdf = "*"
 pyproj = "*"
+fastapi = ">=0.110"
+uvicorn = ">=0.27"
 
 [pypi-dependencies]
 nisar-db = { path = ".", editable = true }
@@ -67,6 +69,8 @@ python-build = "*"
 twine = "*"
 conda-build = "*"
 anaconda-client = "*"
+httpx = ">=0.25"
+httpx2 = ">=2.13.1,<3"
 
 [environments]
 default = { solve-group = "default" }

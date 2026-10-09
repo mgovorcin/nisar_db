@@ -33,7 +33,7 @@ license = { file = "LICENSE" }
 dynamic = ["version", "dependencies"]
 
 [project.optional-dependencies]
-test = ["pytest>=7", "pytest-randomly", "pytest-cov"]
+test = ["pytest>=7", "pytest-randomly", "pytest-cov", "httpx>=0.25", "httpx2"]
 docs = ["mkdocs>=1.5", "mkdocs-material>=9.5", "pymdown-extensions>=10"]
 publish = ["build>=1.0", "twine>=5.0"]
 # Reading per-granule flags from the products (scripts/collect_granule_flags.py).
@@ -44,7 +44,10 @@ browse = ["nisar_db[flags]", "geopandas>=1.0", "pillow", "pypdf", "pyproj"]
 # Everything needed to work on the package; the conda environment.yml stays
 # runtime-only so plain users do not pull the tooling in.
 lint = ["black", "mypy", "pre-commit", "ruff"]
-dev = ["nisar_db[test,docs,publish,lint,flags,browse]"]
+# The REST API (`nisar-db serve`): catalog queries, jobs and the viewer, local
+# or as a shared service.
+api = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["nisar_db[test,docs,publish,lint,flags,browse,api]"]
 
 [project.urls]
 Homepage = "https://github.com/opera-adt/nisar_db"
@@ -115,6 +118,10 @@ exclude = ["scripts"]
 "**/__init__.py" = ["F401", "F403"]
 "tests/**" = ["D", "N", "PTH"]
 "scripts/**" = ["ALL"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI declares parameters with these calls as defaults (nisar_db.api).
+extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.Query"]
 
 [tool.ruff.lint.flake8-unused-arguments]
 # Whether to allow unused variadic arguments, like *args and **kwargs.
