@@ -5433,6 +5433,73 @@ const UNR_GPS_DATA = {"type":"FeatureCollection","features":[{"type":"Feature","
     if (matchFrames(text).length) runSearch(text); else hideResults();
   });
 
+  // ---------- state from the URL ----------
+  // ?product=gunw&opera=0&cycle=20-25&color=gunw_qa_cm&sky=space&play=spin ...
+  // opens the page in that state, through the same calls the buttons make
+  // (the API's /api/v1/viewer/link builds these links).
+  function applyUrlState(){
+    const q = new URLSearchParams(location.search);
+    if (![...q.keys()].length) return;
+    const has = k=> q.has(k) && q.get(k) !== "";
+    const truthy = k=> ["1", "true", "yes", "on"].includes(String(q.get(k)).toLowerCase());
+    if (q.has("opera") && truthy("opera") !== operaOn) setOpera(truthy("opera"));
+    if (has("product") && q.get("product") !== product && !document.getElementById("product-ctrl").hidden) {
+      const b = document.querySelector(`#product-ctrl [data-product="${q.get("product")}"]`);
+      if (b) b.click();
+    }
+    [["f-track", "track"], ["f-frame", "frame"], ["f-id", "id"], ["f-cycle", "cycle"],
+     ["f-date-start", "start"], ["f-date-end", "end"]].forEach(([id, k])=>{
+      if (has(k)) document.getElementById(id).value = q.get(k);
+    });
+    if (has("pass")) {
+      const v = {asc: "Ascending", desc: "Descending"}[q.get("pass")] || "all";
+      const r = document.querySelector(`input[name="pass"][value="${v}"]`);
+      if (r) r.checked = true;
+    }
+    const chips = (k, set)=>{
+      if (!q.has(k)) return;
+      set.clear();
+      q.get(k).split(",").map(s=> s.trim()).filter(Boolean).forEach(v=> set.add(v));
+    };
+    const gunw = product === "gunw";
+    chips("modes", gunw ? activeChips.gunwMode : activeChips.gslcMode);
+    chips("pols", gunw ? activeChips.gunwPol : activeChips.gslcPol);
+    if (q.has("modes") || q.has("pols")) renderChips();
+    if (q.has("popup")) document.getElementById("f-frame-popup").checked = truthy("popup");
+    applyFilters();
+    if (has("color") && offeredColorings().has(q.get("color"))) selectColorBy(q.get("color"));
+    if (has("basemap")) {
+      const r = document.querySelector(`input[name="basemap"][value="${q.get("basemap")}"]`);
+      if (r) { r.checked = true; r.dispatchEvent(new Event("change")); }
+    }
+    if (has("theme") && (q.get("theme") === "light") !== document.body.classList.contains("theme-light")) themeBtn.click();
+    if (has("sky") && SKIES.includes(q.get("sky"))) setSky(q.get("sky"));
+    if (has("center") || has("zoom")) {
+      const c = has("center") ? q.get("center").split(",").map(Number) : null;
+      const view = {};
+      if (c && c.length === 2 && c.every(Number.isFinite)) view.center = c;
+      if (has("zoom") && Number.isFinite(Number(q.get("zoom")))) view.zoom = Number(q.get("zoom"));
+      map.jumpTo(view);
+    }
+    if (truthy("gps")) {
+      const b = document.querySelector('[aria-label="UNR GPS sites"]');
+      if (b && b.getAttribute("aria-pressed") !== "true") b.click();
+    }
+    if (has("play")) {
+      const mode = q.get("play");
+      const radio = document.querySelector(`input[name="anim-mode"][value="${mode === "spin" ? "none" : mode}"]`);
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event("change", {bubbles: true})); }
+      document.getElementById("anim-spin").checked = mode === "spin" || truthy("spin");
+      if (has("step_days")) document.getElementById("anim-days").value = q.get("step_days");
+      if (q.has("cumulative")) document.getElementById("anim-cum").checked = truthy("cumulative");
+      play();
+    }
+    // A page cannot enter the browser's full screen without a click; the map
+    // alone still fills the window, and Esc brings the rest back.
+    if (truthy("fullscreen")) setPresenting(true);
+  }
+  map.on("load", ()=> setTimeout(applyUrlState, 0));
+
   renderSelectedList();
 })();
 </script>
