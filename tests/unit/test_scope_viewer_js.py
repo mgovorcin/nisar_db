@@ -204,7 +204,8 @@ def test_plot_drops_blackout_windows_with_the_opera_switch_off() -> None:
         " JSON.stringify(['2025-09-28 -> 2026-05-26'])};"
         " operaOn = false;"
         " const svg = modeTimelineSvg(GRANULES, p);"
-        " return {bands: svg.includes('chart-blackout'), legend: svg.includes('blackout (')};",
+        " return {bands: svg.includes('chart-blackout'),"
+        " legend: svg.includes('blackout (')};",
     )
     assert result == {"bands": False, "legend": False}
 
