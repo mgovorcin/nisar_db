@@ -25,6 +25,9 @@ create-consistent = "nisar-db create-consistent"
 # Its cache (QA images, grid corners, rebuilt views, the TrackFrame database)
 # stays in the checkout, out of a home directory that may be small.
 nisar_db-ui = "python scripts/qa_browse_server.py --cache-dir .qa_helper_cache"
+# The REST API with the viewer and its helper (docs at /docs); `--mode shared`
+# serves other machines, with API keys. See docs/api.md.
+nisar_db-api = "nisar-db serve --cache-dir .qa_helper_cache"
 
 # Runtime, as in requirements.txt.
 [dependencies]

@@ -50,6 +50,7 @@ nav:
   - Frame viewer:
       - Frame viewer: frame-viewer.md
       - Viewer data sources: data-sources.md
+  - REST API: api.md
   - OPERA project ↗: https://www.jpl.nasa.gov/go/opera/
 
 markdown_extensions:
