@@ -81,12 +81,30 @@ map without opening each plot. The over-time chart
 counts interferograms by secondary date, and the **Mode / Polarization** chips
 list GUNW modes and polarizations; each product keeps its own chip selection.
 
-Pass direction and a **Frame popup** switch sit in the top-left map controls
-(clicking a GPS site never opens the frame panel underneath it); basemaps (light, dark, Esri
-satellite, Google hybrid as *Satellite-H*) in the top-right; the light/dark
-theme switch is beside the viewer title. **Product / Site Flags** carries an
-optional layer of Nevada Geodetic Laboratory GPS sites, off by default; clicking
-a site opens its position time series.
+Pass direction sits in the top-left map controls; basemaps (light, dark, Esri
+satellite, Google hybrid as *Satellite-H*) and the **Frame popup** switch in the
+top-right; the light/dark theme switch is beside the viewer title. The antenna
+button under the volcanoes, bottom right, shows the Nevada Geodetic Laboratory
+GPS sites, off by default; clicking a site opens its position time series (and
+never the frame panel underneath it).
+
+**OPERA switch.** The stacked-layers icon beside the viewer title, on by
+default, carries the DISP planning features: the rainy / snow blackouts (map
+layer, colourings, popup month strip and the grey bands in **Show plot**),
+**Blackout by Month**, the rollout regions (map layer, sidebar section, filter
+and colouring), the consistent mode with its **Consistent Mode Summary**, and
+the reference resets. Turned off, all of these leave the page, and the GPS
+layer widens from North America to the whole network.
+
+**Play and full screen.** Under the **Frame popup** switch, the play button
+slowly spins the globe; a second click stops it, as does grabbing the map.
+Double-click it (long-press on a phone) for its options: step through the
+**cycles** (the cycle filter) or through **time** (the date range, in windows of
+a chosen number of days), one step at a time or cumulatively, at a chosen speed,
+with any **Color frames by** colouring. A caption over the map names the step
+and its frames; stopping restores the cycle filter and the date range. The
+button beside it fills the screen with the map alone; Esc brings the sidebar and
+the controls back.
 
 **Per-granule flags.** When the viewer is built with `--granule-flags`, six
 **Color frames by** options paint each frame by a flag read from every product's
