@@ -139,3 +139,15 @@ def test_blackout_month_shares(viewer_page):
     b = store.blackout(_ds(viewer_page).frame("34_19"))
     assert b["label"] == "Jan-Feb" and b["month_share"]["Jan"] == 1.0
     assert b["month_share"]["Feb"] == 1.0 and b["month_share"]["Mar"] == 0.0
+
+
+def test_header_reads_only_the_meta(tmp_path, page_writer):
+    """Listing datasets must not parse a 100 MB page's frames."""
+    page = page_writer(
+        tmp_path / "v.html", meta={"n_frames": 30448, "view_scope": "globe"}
+    )
+    page.write_text(
+        page.read_text().replace("const FRAME_DATA = {", "const FRAME_DATA = {broken")
+    )
+    head = store.FrameStore(page, None).header("published")
+    assert head["n_frames"] == 30448 and head["scope"] == "globe"

@@ -104,15 +104,7 @@ def frame_query(
 def datasets(request: Request, _: Caller = Depends(READ)) -> list[dict]:
     """List the datasets: the published page and every rebuilt view."""
     st = request.app.state.store
-    out = []
-    for ds_id, path in st.paths().items():
-        cached = st._cache.get(ds_id)
-        out.append(
-            cached.summary()
-            if cached
-            else {"id": ds_id, "file": path.name, "loaded": False}
-        )
-    return out
+    return [st.header(ds_id) for ds_id in st.paths()]
 
 
 @router.get("/datasets/{dataset_id}", tags=["catalog"])
