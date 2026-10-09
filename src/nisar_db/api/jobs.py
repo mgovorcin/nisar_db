@@ -599,6 +599,11 @@ class Jobs:
             proc = self.launcher(job.argv, folder, folder / "log.txt")
             with self._lock:
                 self._procs[job.id] = proc
+                # A cancel that came while the process started found nothing
+                # to stop yet.
+                cancelled = job.state == "cancelled"
+            if cancelled:
+                proc.terminate()
             rc = proc.wait()
         except OSError as exc:
             rc, job.error = -1, f"could not start: {exc}"
