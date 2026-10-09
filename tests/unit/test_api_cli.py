@@ -71,6 +71,8 @@ def test_serve_shared_with_env_keys(served, monkeypatch, tmp_path, viewer_page):
             "--allow-job",
             "download",
             "--private-read",
+            "--public-url",
+            "https://nisar-db.example.org",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -82,6 +84,7 @@ def test_serve_shared_with_env_keys(served, monkeypatch, tmp_path, viewer_page):
         and settings.rate_limit == 10
     )
     assert settings.allowed_heavy_jobs == frozenset({"download"})
+    assert settings.public_url == "https://nisar-db.example.org"
 
 
 @pytest.mark.usefixtures("served")

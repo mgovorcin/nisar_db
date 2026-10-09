@@ -79,6 +79,11 @@ import click
     ),
 )
 @click.option(
+    "--public-url",
+    default=None,
+    help="Address clients reach this service at, for viewer links (behind a proxy).",
+)
+@click.option(
     "--max-jobs", type=int, default=None, help="Jobs running at once (default 2)."
 )
 @click.option(
@@ -100,6 +105,7 @@ def serve(
     private_read,
     cors_origins,
     rate_limit,
+    public_url,
     max_jobs,
     allow_jobs,
 ):
@@ -133,6 +139,7 @@ def serve(
             "private_read": private_read,
             "cors_origins": tuple(cors_origins) or None,
             "rate_limit": rate_limit,
+            "public_url": public_url,
             "max_jobs": max_jobs,
             "allowed_heavy_jobs": frozenset(allow_jobs) or None,
         }
