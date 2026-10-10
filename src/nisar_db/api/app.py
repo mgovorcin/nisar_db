@@ -11,7 +11,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from nisar_db.api import helper as helper_routes
 from nisar_db.api import routes, viewer
-from nisar_db.api.jobs import Jobs
+from nisar_db.api.jobs import Jobs, Launcher
 from nisar_db.api.security import RateLimiter
 from nisar_db.api.settings import HEAVY_JOBS, Settings
 from nisar_db.api.store import FrameStore
@@ -24,6 +24,8 @@ background jobs, viewer pages opened in a given state, and the viewer helper
 **Local mode** listens on 127.0.0.1 and asks for no key. **Shared mode** needs
 an API key (`X-API-Key` header or `Authorization: Bearer`) for jobs and
 rebuilds, and for everything when reads are private.
+
+AI assistants reach the same catalog and job tools over MCP at `/mcp`.
 """
 
 
@@ -63,8 +65,12 @@ def _published(settings: Settings) -> Path | None:
     return helper_routes.default_viewer(settings)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, launcher: Launcher | None = None
+) -> FastAPI:
     """Return the API app for ``settings`` (local defaults when omitted).
+
+    ``launcher`` replaces how jobs start their process (tests pass a fake).
 
     Raises
     ------
@@ -93,6 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_jobs=settings.max_jobs,
         allowed_roots=allowed,
         refuse=HEAVY_JOBS - settings.allowed_heavy_jobs,
+        **({"launcher": launcher} if launcher is not None else {}),
     )
     try:
         app.state.helper, app.state.helper_error = helper_routes.Helper(settings), None
@@ -114,4 +121,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes.router)
     app.include_router(viewer.router)
     app.include_router(helper_routes.router)
+    try:
+        from nisar_db.api.mcp_http import mount_mcp
+    except ImportError:  # pragma: no cover - the mcp package is optional
+        app.state.mcp = None
+    else:
+        mount_mcp(app)
     return app

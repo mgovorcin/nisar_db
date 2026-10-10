@@ -127,6 +127,9 @@ class Settings:
     #: 0 turns the limit off.
     rate_limit: int = 0
     max_jobs: int = 2
+    #: Base URL of this service as clients reach it (for viewer links), e.g.
+    #: behind a proxy; defaults to http://<host>:<port>.
+    public_url: str | None = None
     allowed_heavy_jobs: frozenset[str] = frozenset()
 
     @classmethod

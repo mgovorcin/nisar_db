@@ -107,6 +107,12 @@ button beside it fills the screen with the map alone; Esc brings the sidebar and
 the controls back. The third, a moon with stars, sets what shows behind the globe: the
 theme's colour, white, black, or space (a starfield with the atmosphere's glow).
 
+**Links and the API.** The page reads its state from the URL, so a link can
+open it on a product, filters, colouring, background and play mode: for example
+`?product=gunw&cycle=20-25&sky=space&play=spin`. The [REST API](api.md) builds
+such links (`/api/v1/viewer/link`) and answers the same queries from code; the
+[MCP server](mcp.md) gives them to AI assistants.
+
 **Per-granule flags.** When the viewer is built with `--granule-flags`, six
 **Color frames by** options paint each frame by a flag read from every product's
 HDF5 metadata. The flags are joint observation, full frame, orbit type, RFI

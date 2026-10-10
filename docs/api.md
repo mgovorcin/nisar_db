@@ -9,6 +9,8 @@
   `create-nisar-catalog`, in the background. You collect the outputs when they
   finish.
 - **Serves the viewer**, and builds links that open it in a chosen state.
+- **Serves the same tools to AI assistants** over MCP at `/mcp`. See
+  [MCP server](mcp.md).
 - **Stands in for the viewer helper.** It keeps the QA images, grid corners,
   Earthdata login and search-and-rebuild of `scripts/qa_browse_server.py`, on
   the same paths, so it can replace that script.

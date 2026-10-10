@@ -46,7 +46,7 @@ browse = ["nisar_db[flags]", "geopandas>=1.0", "pillow", "pypdf", "pyproj"]
 lint = ["black", "mypy", "pre-commit", "ruff"]
 # The REST API (`nisar-db serve`): catalog queries, jobs and the viewer, local
 # or as a shared service.
-api = ["fastapi>=0.110", "uvicorn>=0.27"]
+api = ["fastapi>=0.110", "uvicorn>=0.27", "mcp>=2"]
 dev = ["nisar_db[test,docs,publish,lint,flags,browse,api]"]
 
 [project.urls]

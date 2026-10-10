@@ -72,24 +72,31 @@ class Dataset:
 
     def summary(self) -> dict:
         """Return the dataset's header: id, file, scope and counts."""
-        m = self.meta
-        return {
-            "id": self.id,
-            "file": self.path.name,
-            "scope": m.get("view_scope", "na"),
-            "label": m.get("view_label", "North America"),
-            "generated_at": m.get("generated_at"),
-            "catalog_queried_at": m.get("catalog_queried_at"),
-            "n_frames": len(self.features),
-            "n_frames_with_gslc": m.get("n_frames_with_gslc"),
-            "n_granules": m.get("n_granules"),
-            "n_gunw": m.get("n_gunw"),
-            "has_blackout": bool(m.get("has_blackout")),
-            "has_reference": bool(m.get("has_reference")),
-            "has_flags": bool(m.get("has_flags")),
-            "has_qa": bool(m.get("has_qa")),
-            "rollout_options": m.get("rollout_options") or [],
-        }
+        return summarize_meta(self.id, self.path, self.meta, len(self.features))
+
+
+def summarize_meta(
+    dataset_id: str, path: Path, meta: dict, n_frames: int | None
+) -> dict:
+    """Return a dataset's header from its page's ``META``."""
+    m = meta
+    return {
+        "id": dataset_id,
+        "file": path.name,
+        "scope": m.get("view_scope", "na"),
+        "label": m.get("view_label", "North America"),
+        "generated_at": m.get("generated_at"),
+        "catalog_queried_at": m.get("catalog_queried_at"),
+        "n_frames": n_frames,
+        "n_frames_with_gslc": m.get("n_frames_with_gslc"),
+        "n_granules": m.get("n_granules"),
+        "n_gunw": m.get("n_gunw"),
+        "has_blackout": bool(m.get("has_blackout")),
+        "has_reference": bool(m.get("has_reference")),
+        "has_flags": bool(m.get("has_flags")),
+        "has_qa": bool(m.get("has_qa")),
+        "rollout_options": m.get("rollout_options") or [],
+    }
 
 
 class FrameStore:
@@ -112,6 +119,27 @@ class FrameStore:
                 if VIEW_ID.match(p.stem):
                     out[p.stem] = p
         return out
+
+    def header(self, dataset_id: str) -> dict:
+        """Return a dataset's header, reading only its ``META`` (not its frames).
+
+        A loaded dataset answers from memory; otherwise the page is read but its
+        frames are not parsed, so listing a 100 MB globe view stays cheap.
+
+        Raises
+        ------
+        KeyError
+            For an id with no page.
+
+        """
+        path = self.paths().get(dataset_id)
+        if path is None:
+            raise KeyError(dataset_id)
+        cached = self._cache.get(dataset_id)
+        if cached is not None and cached.mtime == path.stat().st_mtime:
+            return cached.summary()
+        meta = _embedded(path.read_text(), "META")
+        return summarize_meta(dataset_id, path, meta, meta.get("n_frames"))
 
     def get(self, dataset_id: str = "published") -> Dataset:
         """Return a dataset, parsing (or re-parsing) its page when needed.

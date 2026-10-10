@@ -156,3 +156,24 @@ def test_output_path_only_serves_listed_outputs(tmp_path, make_launcher, waiter)
     assert jobs.output_path(job.id, "results.csv").read_text() == "out\n"
     with pytest.raises(KeyError):
         jobs.output_path(job.id, "job.json")
+
+
+def test_a_cancel_during_launch_still_stops_the_process(
+    tmp_path, make_launcher, waiter
+):
+    """Regression: cancel() between a process starting and its registration
+    marked the job cancelled but left the process running."""
+    launcher = make_launcher(block=True)
+    jobs = _jobs(tmp_path, launcher)
+
+    def launch_then_cancel(argv, cwd, log):
+        proc = launcher(argv, cwd, log)
+        jobs.cancel(job_id[0])
+        return proc
+
+    jobs.launcher = launch_then_cancel
+    job_id = [None]
+    job_id[0] = jobs.submit("create-blackout-dates", {}, "me").id
+    assert waiter(lambda: bool(launcher.procs) and launcher.procs[0].terminated)
+    assert waiter(lambda: jobs.get(job_id[0]).finished is not None)
+    assert jobs.get(job_id[0]).state == "cancelled"
