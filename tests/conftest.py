@@ -359,7 +359,11 @@ class FakeCMR:
         mislabelled: dict[str, str] | None = None,
         native_content_type: str = UMM_CONTENT_TYPE,
         attributes: dict[str, dict[str, str]] | None = None,
+        failures: Iterable[Exception | int] = (),
     ) -> None:
+        # Replayed before any real answer: an exception is raised, a status
+        # code is returned as an empty response.
+        self.failures = list(failures)
         self.ids = {f"G{i:04d}-ASF": name for i, name in enumerate(names)}
         self.page_dropped = set(page_dropped)
         self.hidden = set(hidden)
@@ -399,6 +403,11 @@ class FakeCMR:
     def get(self, url: str, params: dict | None = None, timeout: float = 0):
         assert timeout > 0, "every CMR request needs a timeout"
         self.calls.append(("GET", url))
+        if self.failures:
+            failure = self.failures.pop(0)
+            if isinstance(failure, Exception):
+                raise failure
+            return FakeCMRResponse(status_code=failure)
         if "/concepts/" in url:
             cid = url.rsplit("/", 1)[1]
             if cid not in self.ids or cid in self.deleted:

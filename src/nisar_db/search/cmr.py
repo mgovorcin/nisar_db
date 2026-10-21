@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import requests
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout
 
 from ..filenames import NISARCollection
 from .models import NISARProduct, ProductType, UrlType
@@ -68,11 +70,42 @@ def _extract_total_hits(response: requests.Response) -> int:
     return int(response.headers.get("CMR-Hits", 0))
 
 
+#: Seconds to wait before each retry of a failed CMR request.
+_RETRY_DELAYS: Tuple[float, ...] = (2.0, 5.0, 15.0, 30.0)
+#: Statuses CMR returns when it is overloaded rather than when a request is bad.
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """Send a CMR request, retrying timeouts, dropped connections and 429/5xx.
+
+    A full-archive search sends thousands of requests, so one slow CMR reply
+    must not fail it. Other errors are returned for ``raise_for_status``.
+    """
+    kwargs.setdefault("timeout", 60)
+    send = requests.get if method == "get" else requests.post
+    for delay in (*_RETRY_DELAYS, None):
+        try:
+            response = send(url, **kwargs)
+        except (Timeout, RequestsConnectionError) as err:
+            if delay is None:
+                raise
+            logger.warning("CMR request failed (%s); retrying in %.0f s", err, delay)
+        else:
+            if response.status_code not in _RETRY_STATUS or delay is None:
+                return response
+            logger.warning(
+                "CMR returned %d; retrying in %.0f s", response.status_code, delay
+            )
+        time.sleep(delay)
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
 def _fetch_page(
     url: str, params: Dict[str, Any], page_num: int
 ) -> List[Dict[str, Any]]:
     """Fetch a single page of CMR results."""
-    response = requests.get(url, params={**params, "page_num": page_num}, timeout=30)
+    response = _request("get", url, params={**params, "page_num": page_num})
     response.raise_for_status()
     return _extract_items(response.json())
 
@@ -113,7 +146,7 @@ def fetch_cmr_pages(
     page_size = params.get("page_size", 10)
 
     logger.debug("Fetching page 1 to determine total pages")
-    response = requests.get(url, params={**params, "page_num": 1}, timeout=30)
+    response = _request("get", url, params={**params, "page_num": 1})
     response.raise_for_status()
 
     first_page_items = _extract_items(response.json())
@@ -244,7 +277,7 @@ def _fetch_native_umm(concept_id: str) -> Optional[Dict[str, Any]]:
     The concepts endpoint serves the metadata as ASF ingested it, so it returns
     the records the ``granules.umm_json`` search drops.
     """
-    response = requests.get(_CONCEPT_URL.format(concept_id), timeout=60)
+    response = _request("get", _CONCEPT_URL.format(concept_id))
     if response.status_code == 404:
         # Deleted between the atom-JSON walk and this lookup.
         return None
@@ -298,7 +331,8 @@ def recover_umm_items(
     found: Dict[str, Dict[str, Any]] = {}
     for start in range(0, len(ids), _RECOVER_BATCH):
         batch = ids[start : start + _RECOVER_BATCH]
-        response = requests.post(
+        response = _request(
+            "post",
             _UMM_SEARCH_URL,
             data={"concept_id[]": batch, "page_size": 2 * len(batch)},
             timeout=120,
@@ -460,8 +494,8 @@ def fetch_umm_by_granule_ur(
     for start in range(0, len(names), batch):
         chunk = names[start : start + batch]
         data = {"short_name": short_name, "page_size": 2 * len(chunk)}
-        response = requests.post(
-            _UMM_SEARCH_URL, data={**data, "granule_ur[]": chunk}, timeout=120
+        response = _request(
+            "post", _UMM_SEARCH_URL, data={**data, "granule_ur[]": chunk}, timeout=120
         )
         response.raise_for_status()
         for item in _extract_items(response.json()):
@@ -469,8 +503,11 @@ def fetch_umm_by_granule_ur(
 
         absent = [name for name in chunk if name not in found]
         if absent:
-            response = requests.post(
-                _JSON_SEARCH_URL, data={**data, "granule_ur[]": absent}, timeout=120
+            response = _request(
+                "post",
+                _JSON_SEARCH_URL,
+                data={**data, "granule_ur[]": absent},
+                timeout=120,
             )
             response.raise_for_status()
             for entry in _extract_items(response.json()):

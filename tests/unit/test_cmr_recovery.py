@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 
 import pytest
+import requests
 
+from nisar_db.search import cmr
 from nisar_db.search.cmr import (
     _JSON_SEARCH_URL,
     _UMM_SEARCH_URL,
@@ -172,3 +174,38 @@ def test_report_records_what_cmr_got_wrong(fake_cmr) -> None:
     assert data["left_out"] == ["G0001-ASF", "G0004-ASF", "G0006-ASF"]
     assert data["mislabelled"] == {"G0002-ASF": NAMES[5]}
     assert data["unrecovered"] == ["G0006-ASF"]
+
+
+@pytest.fixture
+def no_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "_RETRY_DELAYS", (0.0, 0.0, 0.0, 0.0))
+
+
+@pytest.mark.usefixtures("no_retry_wait")
+@pytest.mark.parametrize("failure", [requests.exceptions.ReadTimeout("slow"), 503, 429])
+def test_transient_cmr_failures_are_retried(fake_cmr, failure: Exception | int) -> None:
+    """One slow CMR page failed the weekly viewer build on 2026-10-21.
+    Regression: ReadTimeout in "Query CMR for GSLC granules"."""
+    fake_cmr(NAMES, failures=[failure, failure])
+
+    items = fetch_umm_granules({"page_size": 3}, max_workers=1)
+
+    assert sorted(_names(items)) == NAMES
+
+
+@pytest.mark.usefixtures("no_retry_wait")
+def test_persistent_timeouts_still_fail(fake_cmr) -> None:
+    cmr_fake = fake_cmr(NAMES, failures=[requests.exceptions.ReadTimeout("x")] * 5)
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        fetch_cmr_pages(_UMM_SEARCH_URL, {"page_size": 3}, max_workers=1)
+    assert len(cmr_fake.calls) == 5  # the first try and four retries
+
+
+@pytest.mark.usefixtures("no_retry_wait")
+def test_bad_requests_are_not_retried(fake_cmr) -> None:
+    cmr_fake = fake_cmr(NAMES, failures=[400])
+
+    with pytest.raises(requests.HTTPError):
+        fetch_cmr_pages(_UMM_SEARCH_URL, {"page_size": 3}, max_workers=1)
+    assert len(cmr_fake.calls) == 1
