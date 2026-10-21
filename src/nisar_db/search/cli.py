@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 
-from .cmr import search_nisar_products
+from .cmr import CMRSearchReport, search_nisar_products
 from .frames import download_products, products_to_dataframe
 from .models import UrlType
 from .s3 import search_s3_products
@@ -45,6 +47,11 @@ def main():
     )
     parser.add_argument("--download", type=str, help="Download to this directory")
     parser.add_argument("--output-csv", type=str, help="Save results to CSV")
+    parser.add_argument(
+        "--cmr-report",
+        type=Path,
+        help="Write the granules CMR left out, mislabelled or listed twice (JSON)",
+    )
     parser.add_argument(
         "--url-type",
         type=str,
@@ -109,6 +116,7 @@ def main():
             max_results=args.max_results,
         )
     else:
+        report = CMRSearchReport() if args.cmr_report else None
         products = search_nisar_products(
             bbox=bbox,
             track=args.track,
@@ -122,7 +130,10 @@ def main():
             url_type=UrlType(args.url_type),
             provider=args.provider,
             max_results=args.max_results,
+            report=report,
         )
+        if report is not None:
+            write_cmr_report(args.cmr_report, report, args.product_type)
 
     # Print results
     print(f"Found {len(products)} products")
@@ -143,6 +154,21 @@ def main():
         if args.download:
             downloaded = download_products(products, args.download)
             print(f"Downloaded {len(downloaded)} files to {args.download}")
+
+
+def write_cmr_report(path: Path, report: CMRSearchReport, product_type: str) -> None:
+    """Write a search's CMR report as JSON, stamped with what was searched."""
+    data = {
+        "product_type": product_type,
+        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **report.to_dict(),
+    }
+    path.write_text(json.dumps(data, indent=1) + "\n")
+    counts = data["counts"]
+    print(
+        f"CMR report: {counts['left_out']} left out, {counts['mislabelled']} "
+        f"mislabelled, {counts['duplicate_names']} duplicate names -> {path}"
+    )
 
 
 if __name__ == "__main__":

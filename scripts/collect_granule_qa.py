@@ -87,6 +87,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from nisar_db.search.cmr import fetch_umm_by_granule_ur
+
 from collect_granule_flags import (
     COLLECTIONS,
     _flag,
@@ -486,14 +488,12 @@ def collect(
     say(f"{len(qa)} granules in {output}; {len(failed)} failed (rerun to retry)")
 
 
-CMR_SEARCH = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
-
-
 def cmr_orbit_types(ids: list[str], batch: int = 50) -> dict[str, str]:
     """Look up the orbit type (``ORBIT_TYPE``) of each granule in CMR.
 
     The granule ids go in the body of a POST, ``batch`` at a time, so a weekly
-    run's few thousand new granules take a minute.
+    run's few thousand new granules take a minute. Granules CMR leaves out of
+    its UMM-JSON results are recovered by concept id rather than skipped.
     """
     out: dict[str, str] = {}
     for kind, short_name in (
@@ -501,25 +501,33 @@ def cmr_orbit_types(ids: list[str], batch: int = 50) -> dict[str, str]:
         ("GUNW", "NISAR_L2_GUNW_PROVISIONAL_V1"),
     ):
         names = [g for g in ids if g.split("_")[3] == kind]
-        for i in range(0, len(names), batch):
-            resp = requests.post(
-                CMR_SEARCH,
-                data={
-                    "short_name": short_name,
-                    "granule_ur[]": names[i : i + batch],
-                    "page_size": 2 * batch,
-                },
-                timeout=120,
-            )
-            resp.raise_for_status()
-            products = [
-                SimpleNamespace(name=item["umm"]["GranuleUR"], metadata=item["umm"])
-                for item in resp.json()["items"]
-            ]
-            out.update(
-                {g: v["o"] for g, v in catalog_flags(products).items() if "o" in v}
-            )
+        if not names:
+            continue
+        products = [
+            SimpleNamespace(name=item["umm"]["GranuleUR"], metadata=item["umm"])
+            for item in fetch_umm_by_granule_ur(short_name, names, batch=batch)
+        ]
+        out.update({g: v["o"] for g, v in catalog_flags(products).items() if "o" in v})
     return out
+
+
+def backfill_orbit_types(flags_output: Path, ids: list[str]) -> int:
+    """Add the orbit type to cached flags of ``ids`` that lack one.
+
+    A granule's flags are cached once and not re-read, so a granule whose
+    orbit lookup came back empty (CMR's UMM-JSON leaving it out) kept no
+    orbit type. Returns the number of granules filled.
+    """
+    flags = load_cache(flags_output)
+    gaps = [g for g in ids if g in flags and "o" not in flags[g]]
+    if not gaps:
+        return 0
+    orbits = cmr_orbit_types(gaps)
+    for gid, orbit in orbits.items():
+        flags[gid]["o"] = orbit
+    if orbits:
+        save_cache(flags_output, flags)
+    return len(orbits)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -556,6 +564,9 @@ def main(argv: list[str] | None = None) -> None:
 
     ids = list(dict.fromkeys(viewer_granule_ids(args.viewer_html)))
     qa_cached = load_cache(args.output)
+    if args.flags_output is not None:
+        filled = backfill_orbit_types(args.flags_output, ids)
+        print(f"orbit types backfilled for {filled} cached granules", flush=True)
     flags_cached = load_cache(args.flags_output) if args.flags_output else None
     todo = [
         g

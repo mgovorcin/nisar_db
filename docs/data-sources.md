@@ -9,7 +9,7 @@ Four sources feed the page:
 | Source | What it is | Access |
 |---|---|---|
 | **TrackFrame database** | `NISAR_TrackFrame_L_*.gpkg`, one row per NISAR frame (`nisar-db download-frame-db`) | public download |
-| **CMR** | NASA's Common Metadata Repository, `https://cmr.earthdata.nasa.gov/search/granules.umm_json`, collections `NISAR_L2_GSLC_PROVISIONAL_V1` and `NISAR_L2_GUNW_PROVISIONAL_V1` | public |
+| **CMR** | NASA's Common Metadata Repository, `https://cmr.earthdata.nasa.gov/search/granules.umm_json`, collections `NISAR_L2_GSLC_PROVISIONAL_V1` and `NISAR_L2_GUNW_PROVISIONAL_V1`. UMM-JSON leaves some granules out of its results while counting them in `CMR-Hits` (seen October 2026), so every search is checked against the atom-JSON `granules.json` listing and the missing records are fetched from `search/concepts/<id>` ([details](background/cmr-umm-json-drops.md)) | public |
 | **`QA_STATS.h5`** | the small (60-160 kB) statistics file the NISAR QA software writes next to every product: `https://nisar.asf.earthdatacloud.nasa.gov/NISAR/<collection>/<granule>/<granule>_QA_STATS.h5` | Earthdata login |
 | **Repository files** | CalVal sites, rollout regions, blackout dates, the flag and QA caches under `catalog/` | in the repo |
 
