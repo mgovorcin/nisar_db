@@ -342,8 +342,10 @@ class FakeCMR:
 
     ``page_dropped`` granules are missing from paged UMM-JSON results but come
     back when UMM-JSON is asked for them by concept id; ``hidden`` granules
-    never come back from UMM-JSON. Atom-JSON (``granules.json``) lists every
-    granule, and the concepts endpoint serves every granule not ``deleted``.
+    never come back from UMM-JSON. ``mislabelled`` maps a concept id to the
+    one whose record UMM-JSON serves in its place. Atom-JSON (``granules.json``)
+    lists every granule under its own name, and the concepts endpoint serves
+    every granule not ``deleted``.
     ``calls`` records ``(method, url)`` of every request.
     """
 
@@ -354,6 +356,7 @@ class FakeCMR:
         page_dropped: Iterable[str] = (),
         hidden: Iterable[str] = (),
         deleted: Iterable[str] = (),
+        mislabelled: dict[str, str] | None = None,
         native_content_type: str = UMM_CONTENT_TYPE,
         attributes: dict[str, dict[str, str]] | None = None,
     ) -> None:
@@ -361,6 +364,7 @@ class FakeCMR:
         self.page_dropped = set(page_dropped)
         self.hidden = set(hidden)
         self.deleted = set(deleted)
+        self.mislabelled = mislabelled or {}
         self.native_content_type = native_content_type
         self.attributes = attributes or {}
         self.calls: list[tuple[str, str]] = []
@@ -382,7 +386,10 @@ class FakeCMR:
             return {
                 "hits": len(cids),
                 "items": [
-                    {"meta": {"concept-id": c}, "umm": self.umm(c)}
+                    {
+                        "meta": {"concept-id": c},
+                        "umm": self.umm(self.mislabelled.get(c, c)),
+                    }
                     for c in cids
                     if c not in self.hidden
                 ],

@@ -14,6 +14,7 @@ import pytest
 from nisar_db.search.cmr import (
     _JSON_SEARCH_URL,
     _UMM_SEARCH_URL,
+    CMRSearchReport,
     fetch_cmr_pages,
     fetch_umm_by_granule_ur,
     fetch_umm_granules,
@@ -36,6 +37,22 @@ def test_fetch_umm_granules_recovers_every_dropped_granule(fake_cmr) -> None:
     assert sorted(_names(items)) == NAMES
     # Only the granule UMM-JSON never returns costs a concepts-endpoint request.
     assert cmr.concept_lookups() == ["G0004-ASF"]
+
+
+def test_fetch_umm_granules_replaces_records_served_under_the_wrong_id(
+    fake_cmr,
+) -> None:
+    """UMM-JSON served another granule's record under ~3,500 GUNW concept
+    ids, so the viewer lost them as duplicate names. Regression: 2026-10."""
+    cmr = fake_cmr(NAMES, mislabelled={"G0002-ASF": "G0005-ASF"})
+
+    items = fetch_umm_granules({"page_size": 3}, max_workers=1)
+
+    assert sorted(_names(items)) == NAMES
+    by_id = {item["meta"]["concept-id"]: item["umm"]["GranuleUR"] for item in items}
+    assert by_id["G0002-ASF"] == NAMES[2]
+    # Asking UMM-JSON by id serves the same wrong record, so it is not trusted.
+    assert cmr.concept_lookups() == ["G0002-ASF"]
 
 
 def test_fetch_umm_granules_skips_recovery_when_nothing_is_missing(fake_cmr) -> None:
@@ -116,3 +133,42 @@ def test_search_nisar_products_includes_granules_umm_json_drops(fake_cmr) -> Non
     products = search_nisar_products(product_type="GSLC", max_workers=1)
 
     assert sorted(p.name for p in products) == NAMES
+
+
+def test_one_record_per_name_and_cmr_duplicates_are_reported(fake_cmr) -> None:
+    # CMR lists NAMES[1] under two concept ids (G0001 and G0002).
+    names = [NAMES[0], NAMES[1], NAMES[1], NAMES[2]]
+    fake_cmr(names, hidden={"G0003-ASF"})
+    report = CMRSearchReport()
+
+    items = fetch_umm_granules({"page_size": 3}, max_workers=1, report=report)
+
+    assert sorted(_names(items)) == [NAMES[0], NAMES[1], NAMES[2]]
+    kept = {i["umm"]["GranuleUR"]: i["meta"]["concept-id"] for i in items}
+    assert kept[NAMES[1]] == "G0002-ASF"  # the most recently ingested
+    assert report.duplicate_names == {NAMES[1]: ["G0001-ASF", "G0002-ASF"]}
+
+
+def test_report_records_what_cmr_got_wrong(fake_cmr) -> None:
+    fake_cmr(
+        NAMES,
+        page_dropped={"G0001-ASF"},
+        hidden={"G0004-ASF", "G0006-ASF"},
+        deleted={"G0006-ASF"},
+        mislabelled={"G0002-ASF": "G0005-ASF"},
+    )
+    report = CMRSearchReport()
+
+    fetch_umm_granules({"page_size": 3}, max_workers=1, report=report)
+
+    data = report.to_dict()
+    assert data["counts"] == {
+        "listed": 7,
+        "left_out": 3,
+        "mislabelled": 1,
+        "duplicate_names": 0,
+        "unrecovered": 1,
+    }
+    assert data["left_out"] == ["G0001-ASF", "G0004-ASF", "G0006-ASF"]
+    assert data["mislabelled"] == {"G0002-ASF": NAMES[5]}
+    assert data["unrecovered"] == ["G0006-ASF"]

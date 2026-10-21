@@ -187,6 +187,11 @@ def download_frame_db_cmd(output_dir: Path, force: bool, granule_id: str | None)
 @click.option("--download", type=str, help="Download to this directory")
 @click.option("--output-csv", type=str, help="Save results to CSV")
 @click.option(
+    "--cmr-report",
+    type=str,
+    help="Write the granules CMR left out, mislabelled or listed twice (JSON)",
+)
+@click.option(
     "--s3-bucket",
     type=str,
     help="Search this S3 bucket instead of CMR (name or s3:// URI)",

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -26,6 +28,7 @@ from ..filenames import NISARCollection
 from .models import NISARProduct, ProductType, UrlType
 
 __all__ = [
+    "CMRSearchReport",
     "fetch_cmr_pages",
     "fetch_umm_by_granule_ur",
     "fetch_umm_granules",
@@ -173,6 +176,55 @@ def _warn_if_short(fetched: int, total_hits: int) -> None:
         )
 
 
+@dataclass
+class CMRSearchReport:
+    """What CMR got wrong in one granule search, for reporting upstream.
+
+    Attributes
+    ----------
+    listed : int
+        Granules the atom-JSON listing returned.
+    left_out : list of str
+        Concept ids UMM-JSON did not return.
+    mislabelled : dict
+        Concept id -> the other granule's name UMM-JSON served under it.
+    duplicate_names : dict
+        Granule name -> every concept id CMR lists under it, when more than
+        one. The search keeps one record per name; the rest are listed here.
+    unrecovered : list of str
+        Concept ids no endpoint returned (deleted mid-search).
+
+    """
+
+    listed: int = 0
+    left_out: List[str] = field(default_factory=list)
+    mislabelled: Dict[str, str] = field(default_factory=dict)
+    duplicate_names: Dict[str, List[str]] = field(default_factory=dict)
+    unrecovered: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the report as JSON-ready data, counts first."""
+        return {
+            "counts": {
+                "listed": self.listed,
+                "left_out": len(self.left_out),
+                "mislabelled": len(self.mislabelled),
+                "duplicate_names": len(self.duplicate_names),
+                "unrecovered": len(self.unrecovered),
+            },
+            "left_out": sorted(self.left_out),
+            "mislabelled": dict(sorted(self.mislabelled.items())),
+            "duplicate_names": dict(sorted(self.duplicate_names.items())),
+            "unrecovered": sorted(self.unrecovered),
+        }
+
+
+def _concept_number(concept_id: str) -> int:
+    """Return the numeric part of a concept id (``G4245361810-ASF`` -> 4245361810)."""
+    digits = concept_id[1:].split("-", 1)[0]
+    return int(digits) if digits.isdigit() else -1
+
+
 def _concept_id(item: Dict[str, Any]) -> str:
     """Return the concept id of a UMM-JSON item or an atom-JSON entry."""
     return item.get("meta", {}).get("concept-id") or item.get("id", "")
@@ -205,14 +257,23 @@ def _fetch_native_umm(concept_id: str) -> Optional[Dict[str, Any]]:
     return {"meta": {"concept-id": concept_id}, "umm": response.json()}
 
 
+def _granule_ur(item: Dict[str, Any]) -> str:
+    """Return the granule name a UMM-JSON item carries."""
+    return item.get("umm", {}).get("GranuleUR", "")
+
+
 def recover_umm_items(
-    concept_ids: List[str], max_workers: int = 4
+    concept_ids: List[str],
+    max_workers: int = 4,
+    expected: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch the UMM-G records of granules a UMM-JSON search left out.
 
     CMR drops some records from ``granules.umm_json`` results while still
-    counting them in ``CMR-Hits``. Some reappear when asked for by concept id;
-    the rest only come back from the concepts endpoint, one granule per request.
+    counting them in ``CMR-Hits``, and for others it serves another granule's
+    record under their concept id. Some come back right when UMM-JSON is asked
+    for them by concept id; the rest only come back from the concepts endpoint,
+    one granule per request.
 
     Parameters
     ----------
@@ -220,6 +281,10 @@ def recover_umm_items(
         Granule concept ids, e.g. ``"G4245361810-ASF"``.
     max_workers : int
         Concurrent concepts-endpoint requests (at most 4).
+    expected : dict, optional
+        Granule name of each concept id, from atom-JSON. A UMM-JSON record
+        carrying another name is not trusted and is fetched from the concepts
+        endpoint instead.
 
     Returns
     -------
@@ -239,15 +304,17 @@ def recover_umm_items(
             timeout=120,
         )
         response.raise_for_status()
-        found.update(_by_concept_id(_extract_items(response.json())))
+        for cid, item in _by_concept_id(_extract_items(response.json())).items():
+            if expected is None or _granule_ur(item) == expected.get(cid):
+                found[cid] = item
 
     rest = [cid for cid in ids if cid not in found]
     if rest:
         logger.info("Fetching %d granules from the CMR concepts endpoint", len(rest))
         with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 4))) as executor:
-            for cid, item in zip(rest, executor.map(_fetch_native_umm, rest)):
-                if item is not None:
-                    found[cid] = item
+            for cid, native in zip(rest, executor.map(_fetch_native_umm, rest)):
+                if native is not None:
+                    found[cid] = native
 
     lost = len(ids) - len(found)
     if lost:
@@ -259,14 +326,17 @@ def fetch_umm_granules(
     params: Dict[str, Any],
     max_workers: int = 4,
     rate_limit_delay: float = 0.0,
+    report: Optional[CMRSearchReport] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch the UMM-G record of every granule a CMR search matches.
 
-    ``granules.umm_json`` leaves out records that ``CMR-Hits`` counts (in
-    October 2026, 6,024 of 89,817 NISAR GUNWs), while the atom-JSON
-    ``granules.json`` lists them all. The atom walk therefore supplies the
-    complete set of concept ids, and :func:`recover_umm_items` fetches the
-    records the UMM-JSON walk missed.
+    ``granules.umm_json`` leaves out records that ``CMR-Hits`` counts, and
+    under some concept ids serves another granule's record (in October 2026,
+    about 6,000 and 3,500 of 89,890 NISAR GUNWs), while the atom-JSON
+    ``granules.json`` lists every granule under its own name. The atom walk
+    therefore supplies the complete set of concept ids and names, and
+    :func:`recover_umm_items` fetches every record the UMM-JSON walk missed or
+    got wrong.
 
     Parameters
     ----------
@@ -276,11 +346,15 @@ def fetch_umm_granules(
         Concurrent CMR page workers.
     rate_limit_delay : float
         Delay in seconds between page requests.
+    report : CMRSearchReport, optional
+        Filled with what CMR left out, mislabelled or listed twice.
 
     Returns
     -------
     list of dict
-        One UMM-JSON item per granule, without page-boundary repeats.
+        One UMM-JSON item per granule name. When CMR lists a name under several
+        concept ids, the most recently ingested one (highest concept id) is
+        kept and the duplicates go to ``report``.
 
     """
     items, listed = (
@@ -294,15 +368,65 @@ def fetch_umm_granules(
         )
         for url in (_UMM_SEARCH_URL, _JSON_SEARCH_URL)
     )
-    missing = [cid for cid in listed if cid not in items]
+    names = {cid: entry.get("title", "") for cid, entry in listed.items()}
+    wrong = [
+        cid for cid in names if cid in items and _granule_ur(items[cid]) != names[cid]
+    ]
+    if report is not None:
+        report.listed = len(names)
+        report.left_out = [cid for cid in names if cid not in items]
+        report.mislabelled = {cid: _granule_ur(items[cid]) for cid in wrong}
+    for cid in wrong:
+        del items[cid]
+    missing = [cid for cid in names if cid not in items]
+    if wrong:
+        logger.warning(
+            "CMR UMM-JSON served another granule's record for %d of %d granules",
+            len(wrong),
+            len(names),
+        )
     if missing:
         logger.warning(
-            "CMR UMM-JSON left out %d of %d granules; recovering them by concept id",
+            "CMR UMM-JSON left out or mislabelled %d of %d granules; "
+            "recovering them by concept id",
             len(missing),
-            len(listed),
+            len(names),
         )
-        items.update(_by_concept_id(recover_umm_items(missing, max_workers)))
-    return list(items.values())
+        items.update(
+            _by_concept_id(recover_umm_items(missing, max_workers, expected=names))
+        )
+    unrecovered = [cid for cid in missing if cid not in items]
+    duplicates, unique = _one_per_name(items)
+    if duplicates:
+        logger.warning(
+            "CMR lists %d granule names under more than one concept id; "
+            "keeping the most recent of each",
+            len(duplicates),
+        )
+    if report is not None:
+        report.unrecovered = unrecovered
+        report.duplicate_names = duplicates
+    return unique
+
+
+def _one_per_name(
+    items: Dict[str, Dict[str, Any]],
+) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+    """Keep one item per granule name, the one with the highest concept id.
+
+    Returns the names CMR lists under several concept ids (name -> sorted ids)
+    and the kept items.
+    """
+    by_name: Dict[str, List[str]] = defaultdict(list)
+    for cid, item in items.items():
+        by_name[_granule_ur(item)].append(cid)
+    duplicates = {
+        name: sorted(cids, key=_concept_number)
+        for name, cids in by_name.items()
+        if len(cids) > 1
+    }
+    kept = [items[max(cids, key=_concept_number)] for cids in by_name.values()]
+    return duplicates, kept
 
 
 def fetch_umm_by_granule_ur(
@@ -332,6 +456,7 @@ def fetch_umm_by_granule_ur(
     names = list(dict.fromkeys(granule_urs))
     found: Dict[str, Dict[str, Any]] = {}
     missing_ids: List[str] = []
+    expected: Dict[str, str] = {}
     for start in range(0, len(names), batch):
         chunk = names[start : start + batch]
         data = {"short_name": short_name, "page_size": 2 * len(chunk)}
@@ -348,7 +473,9 @@ def fetch_umm_by_granule_ur(
                 _JSON_SEARCH_URL, data={**data, "granule_ur[]": absent}, timeout=120
             )
             response.raise_for_status()
-            missing_ids += [_concept_id(e) for e in _extract_items(response.json())]
+            for entry in _extract_items(response.json()):
+                missing_ids.append(_concept_id(entry))
+                expected[_concept_id(entry)] = entry.get("title", "")
 
     if missing_ids:
         logger.warning(
@@ -356,8 +483,8 @@ def fetch_umm_by_granule_ur(
             len(missing_ids),
             len(names),
         )
-        for item in recover_umm_items(missing_ids):
-            found[item["umm"]["GranuleUR"]] = item
+        for item in recover_umm_items(missing_ids, expected=expected):
+            found[_granule_ur(item)] = item
     return [found[name] for name in names if name in found]
 
 
@@ -448,6 +575,7 @@ def search_nisar_products(
     short_name: Optional[Union[str, List[str]]] = None,
     max_results: Optional[int] = None,
     max_workers: int = 4,  # Increased workers to 4 by default
+    report: Optional[CMRSearchReport] = None,
 ) -> List[NISARProduct]:
     """Search for NISAR products in CMR.
 
@@ -486,6 +614,9 @@ def search_nisar_products(
     max_workers : int
         Maximum number of concurrent workers for fetching pages.
         Default is 2 to avoid overwhelming the CMR API.
+    report : CMRSearchReport, optional
+        Filled with what CMR left out, mislabelled or listed twice; see
+        :func:`fetch_umm_granules`.
 
     Returns
     -------
@@ -526,7 +657,10 @@ def search_nisar_products(
     # Ensure we respect CMR rate limits while using parallel workers
     rate_limit_delay = 0.1 if max_workers > 2 else 0.0
     items = fetch_umm_granules(
-        params, max_workers=max_workers, rate_limit_delay=rate_limit_delay
+        params,
+        max_workers=max_workers,
+        rate_limit_delay=rate_limit_delay,
+        report=report,
     )
 
     # Convert to NISARProduct objects

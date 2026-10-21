@@ -70,3 +70,22 @@ def test_deprecated_alias_warns(runner: CliRunner, tmp_path) -> None:
 def test_query_catalog_requires_existing_path(runner: CliRunner) -> None:
     result = runner.invoke(cli_app, ["query-catalog", "/no/such/catalog.csv"])
     assert result.exit_code != 0
+
+
+def test_search_writes_the_cmr_report(runner: CliRunner, fake_cmr, tmp_path) -> None:
+    import json
+
+    names = [f"NISAR_L2_PR_GSLC_{i:03d}" for i in range(4)]
+    fake_cmr(names, hidden={"G0002-ASF"}, mislabelled={"G0001-ASF": "G0003-ASF"})
+    out = tmp_path / "cmr_report.json"
+
+    result = runner.invoke(
+        cli_app, ["search", "--max-results", "0", "--cmr-report", str(out)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Found 4 products" in result.output
+    report = json.loads(out.read_text())
+    assert report["product_type"] == "GSLC"
+    assert report["counts"]["left_out"] == 1
+    assert report["mislabelled"] == {"G0001-ASF": names[3]}
