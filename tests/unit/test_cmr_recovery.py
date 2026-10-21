@@ -1,0 +1,118 @@
+"""Unit tests for recovering granules CMR leaves out of UMM-JSON (no network).
+
+CMR counts some granules in ``CMR-Hits`` but drops them from
+``granules.umm_json`` results, while atom-JSON lists them all. In October 2026
+that hid 6,024 of 89,817 NISAR GUNWs from the viewer's searches.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import pytest
+
+from nisar_db.search.cmr import (
+    _JSON_SEARCH_URL,
+    _UMM_SEARCH_URL,
+    fetch_cmr_pages,
+    fetch_umm_by_granule_ur,
+    fetch_umm_granules,
+    recover_umm_items,
+    search_nisar_products,
+)
+
+NAMES = [f"NISAR_L2_PR_GSLC_{i:03d}" for i in range(7)]
+
+
+def _names(items: list[dict]) -> list[str]:
+    return [item["umm"]["GranuleUR"] for item in items]
+
+
+def test_fetch_umm_granules_recovers_every_dropped_granule(fake_cmr) -> None:
+    cmr = fake_cmr(NAMES, page_dropped={"G0001-ASF"}, hidden={"G0004-ASF"})
+
+    items = fetch_umm_granules({"page_size": 3}, max_workers=1)
+
+    assert sorted(_names(items)) == NAMES
+    # Only the granule UMM-JSON never returns costs a concepts-endpoint request.
+    assert cmr.concept_lookups() == ["G0004-ASF"]
+
+
+def test_fetch_umm_granules_skips_recovery_when_nothing_is_missing(fake_cmr) -> None:
+    cmr = fake_cmr(NAMES)
+
+    items = fetch_umm_granules({"page_size": 3}, max_workers=1)
+
+    assert sorted(_names(items)) == NAMES
+    assert all(method == "GET" for method, _ in cmr.calls)
+
+
+def test_short_page_does_not_end_the_walk(fake_cmr) -> None:
+    """A UMM-JSON page shortened by drops used to end the walk early, losing
+    every later page. Regression: CMR UMM-JSON drops, 2026-10."""
+    fake_cmr(NAMES, page_dropped={"G0000-ASF"})
+
+    items = fetch_cmr_pages(_UMM_SEARCH_URL, {"page_size": 3}, max_workers=1)
+
+    assert _names(items) == NAMES[1:]
+
+
+def test_page_walk_warns_when_short_of_cmr_hits(
+    fake_cmr, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_cmr(NAMES, hidden={"G0002-ASF", "G0005-ASF"})
+
+    with caplog.at_level(logging.WARNING):
+        fetch_cmr_pages(_UMM_SEARCH_URL, {"page_size": 3}, max_workers=1)
+
+    assert "Fetched only 5 of the 7" in caplog.text
+
+
+def test_atom_walk_lists_every_granule(fake_cmr) -> None:
+    fake_cmr(NAMES, hidden={"G0002-ASF"})
+
+    entries = fetch_cmr_pages(_JSON_SEARCH_URL, {"page_size": 3}, max_workers=1)
+
+    assert [e["title"] for e in entries] == NAMES
+
+
+def test_recover_umm_items_keeps_order_and_skips_deleted(
+    fake_cmr, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_cmr(
+        NAMES,
+        page_dropped={"G0003-ASF"},
+        hidden={"G0001-ASF", "G0005-ASF"},
+        deleted={"G0005-ASF"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        items = recover_umm_items(["G0005-ASF", "G0003-ASF", "G0001-ASF"])
+
+    assert _names(items) == [NAMES[3], NAMES[1]]
+    assert "1 of 3 granules are no longer in CMR" in caplog.text
+
+
+def test_recover_umm_items_rejects_non_umm_native_metadata(fake_cmr) -> None:
+    fake_cmr(NAMES, hidden={"G0001-ASF"}, native_content_type="application/echo10+xml")
+
+    with pytest.raises(ValueError, match=r"G0001-ASF: native metadata is .*echo10"):
+        recover_umm_items(["G0001-ASF"])
+
+
+def test_fetch_umm_by_granule_ur_recovers_named_granules(fake_cmr) -> None:
+    fake_cmr(NAMES, page_dropped={"G0002-ASF"}, hidden={"G0006-ASF"})
+    wanted = [NAMES[6], NAMES[0], "NISAR_L2_PR_GSLC_UNKNOWN", NAMES[2]]
+
+    items = fetch_umm_by_granule_ur("NISAR_L2_GSLC_PROVISIONAL_V1", wanted, batch=2)
+
+    # Names CMR does not know are left out; the rest keep the requested order.
+    assert _names(items) == [NAMES[6], NAMES[0], NAMES[2]]
+
+
+def test_search_nisar_products_includes_granules_umm_json_drops(fake_cmr) -> None:
+    fake_cmr(NAMES, hidden={"G0003-ASF"})
+
+    products = search_nisar_products(product_type="GSLC", max_workers=1)
+
+    assert sorted(p.name for p in products) == NAMES

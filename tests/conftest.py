@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import pytest
+import requests
 
 from nisar_db.search.models import NISARProduct
 
@@ -301,3 +303,132 @@ def waiter():
 def page_writer():
     """``write_page(path, frames, meta)``."""
     return write_page
+
+
+# ---------------------------------------------------------------------------
+# A CMR stand-in that drops records from UMM-JSON the way the real one does
+# ---------------------------------------------------------------------------
+
+UMM_CONTENT_TYPE = "application/vnd.nasa.cmr.umm+json;version=1.6.6; charset=utf-8"
+
+
+class FakeCMRResponse:
+    """The parts of ``requests.Response`` the CMR helpers read."""
+
+    def __init__(
+        self,
+        body: dict | None = None,
+        *,
+        hits: int | None = None,
+        status_code: int = 200,
+        content_type: str = UMM_CONTENT_TYPE,
+    ) -> None:
+        self._body = body or {}
+        self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
+        if hits is not None:
+            self.headers["CMR-Hits"] = str(hits)
+
+    def json(self) -> dict:
+        return self._body
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} from fake CMR")
+
+
+class FakeCMR:
+    """A granule archive served as CMR serves it in October 2026.
+
+    ``page_dropped`` granules are missing from paged UMM-JSON results but come
+    back when UMM-JSON is asked for them by concept id; ``hidden`` granules
+    never come back from UMM-JSON. Atom-JSON (``granules.json``) lists every
+    granule, and the concepts endpoint serves every granule not ``deleted``.
+    ``calls`` records ``(method, url)`` of every request.
+    """
+
+    def __init__(
+        self,
+        names: list[str],
+        *,
+        page_dropped: Iterable[str] = (),
+        hidden: Iterable[str] = (),
+        deleted: Iterable[str] = (),
+        native_content_type: str = UMM_CONTENT_TYPE,
+        attributes: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        self.ids = {f"G{i:04d}-ASF": name for i, name in enumerate(names)}
+        self.page_dropped = set(page_dropped)
+        self.hidden = set(hidden)
+        self.deleted = set(deleted)
+        self.native_content_type = native_content_type
+        self.attributes = attributes or {}
+        self.calls: list[tuple[str, str]] = []
+
+    def concept_id(self, name: str) -> str:
+        return next(cid for cid, n in self.ids.items() if n == name)
+
+    def umm(self, cid: str) -> dict:
+        attrs = self.attributes.get(self.ids[cid], {})
+        return {
+            "GranuleUR": self.ids[cid],
+            "AdditionalAttributes": [
+                {"Name": k, "Values": [v]} for k, v in attrs.items()
+            ],
+        }
+
+    def _body(self, url: str, cids: list[str]) -> dict:
+        if "umm_json" in url:
+            return {
+                "hits": len(cids),
+                "items": [
+                    {"meta": {"concept-id": c}, "umm": self.umm(c)}
+                    for c in cids
+                    if c not in self.hidden
+                ],
+            }
+        return {"feed": {"entry": [{"id": c, "title": self.ids[c]} for c in cids]}}
+
+    def get(self, url: str, params: dict | None = None, timeout: float = 0):
+        assert timeout > 0, "every CMR request needs a timeout"
+        self.calls.append(("GET", url))
+        if "/concepts/" in url:
+            cid = url.rsplit("/", 1)[1]
+            if cid not in self.ids or cid in self.deleted:
+                return FakeCMRResponse(status_code=404)
+            return FakeCMRResponse(self.umm(cid), content_type=self.native_content_type)
+        params = params or {}
+        size, page = params["page_size"], params["page_num"]
+        cids = list(self.ids)
+        rows = cids[(page - 1) * size : page * size]
+        if "umm_json" in url:
+            rows = [c for c in rows if c not in self.page_dropped]
+        return FakeCMRResponse(self._body(url, rows), hits=len(cids))
+
+    def post(self, url: str, data: dict, timeout: float = 0):
+        assert timeout > 0, "every CMR request needs a timeout"
+        self.calls.append(("POST", url))
+        if "concept_id[]" in data:
+            cids = [c for c in data["concept_id[]"] if c in self.ids]
+        else:
+            wanted = set(data["granule_ur[]"])
+            cids = [c for c, n in self.ids.items() if n in wanted]
+            if "umm_json" in url:
+                cids = [c for c in cids if c not in self.page_dropped]
+        return FakeCMRResponse(self._body(url, cids), hits=len(cids))
+
+    def concept_lookups(self) -> list[str]:
+        return [u.rsplit("/", 1)[1] for m, u in self.calls if "/concepts/" in u]
+
+
+@pytest.fixture
+def fake_cmr(monkeypatch: pytest.MonkeyPatch):
+    """Build a ``FakeCMR`` and route ``nisar_db.search.cmr``'s HTTP through it."""
+    from nisar_db.search import cmr
+
+    def install(names: list[str], **kwargs) -> FakeCMR:
+        fake = FakeCMR(names, **kwargs)
+        monkeypatch.setattr(cmr, "requests", fake)
+        return fake
+
+    return install

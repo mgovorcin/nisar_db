@@ -4,6 +4,8 @@ Two entry points:
 
 - :func:`search_nisar_products` returns typed :class:`NISARProduct` objects from
   the UMM-G endpoint (used by the ``search`` CLI and downstream tooling).
+  CMR leaves some granules out of UMM-JSON results, so it goes through
+  :func:`fetch_umm_granules`, which recovers them.
 - :func:`search_nisar_granules` returns a flat granule DataFrame from the
   echo10 ``granules.json`` endpoint (used by the catalog builders, which parse
   the granule *name* and CMR link ``rel`` values themselves).
@@ -25,6 +27,9 @@ from .models import NISARProduct, ProductType, UrlType
 
 __all__ = [
     "fetch_cmr_pages",
+    "fetch_umm_by_granule_ur",
+    "fetch_umm_granules",
+    "recover_umm_items",
     "search_nisar_granules",
     "search_nisar_products",
 ]
@@ -33,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 _UMM_SEARCH_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
 _JSON_SEARCH_URL = "https://cmr.earthdata.nasa.gov/search/granules.json"
+_CONCEPT_URL = "https://cmr.earthdata.nasa.gov/search/concepts/{}"
+# Concept ids per POST when re-asking UMM-JSON for granules a search left out.
+_RECOVER_BATCH = 100
 
 
 def _extract_items(response_json: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -114,7 +122,10 @@ def fetch_cmr_pages(
     total_pages = (total_hits + page_size - 1) // page_size
     logger.debug(f"Total pages: {total_pages} (from {total_hits} hits)")
 
-    if total_pages <= 1 or len(first_page_items) < page_size:
+    # A short page is not the end of the results while CMR-Hits says there are
+    # more: UMM-JSON pages come back short when CMR leaves records out of them.
+    if total_pages <= 1:
+        _warn_if_short(len(first_page_items), total_hits)
         return first_page_items
 
     all_items = first_page_items.copy()
@@ -130,11 +141,8 @@ def fetch_cmr_pages(
             if rate_limit_delay > 0:
                 time.sleep(rate_limit_delay)
 
-            items = _fetch_page(url, params, page_num)
-            all_items.extend(items)
-
-            if len(items) < page_size:
-                break
+            all_items.extend(_fetch_page(url, params, page_num))
+        _warn_if_short(len(all_items), total_hits)
         return all_items
 
     def fetch_page(page_num: int) -> List[Dict[str, Any]]:
@@ -149,16 +157,208 @@ def fetch_cmr_pages(
         for future in as_completed(futures):
             all_items.extend(future.result())
 
-    # Over-fetching is normal -- ASF ingests granules while the pages are being
-    # walked -- but coming up short means a page was dropped.
-    if len(all_items) < total_hits:
+    _warn_if_short(len(all_items), total_hits)
+    return all_items
+
+
+def _warn_if_short(fetched: int, total_hits: int) -> None:
+    """Warn when a page walk returned fewer records than ``CMR-Hits``.
+
+    Over-fetching is normal -- ASF ingests granules while the pages are being
+    walked -- but coming up short means records or pages were dropped.
+    """
+    if fetched < total_hits:
         logger.warning(
-            "Fetched only %d of the %d granules CMR reported.",
-            len(all_items),
-            total_hits,
+            "Fetched only %d of the %d granules CMR reported.", fetched, total_hits
         )
 
-    return all_items
+
+def _concept_id(item: Dict[str, Any]) -> str:
+    """Return the concept id of a UMM-JSON item or an atom-JSON entry."""
+    return item.get("meta", {}).get("concept-id") or item.get("id", "")
+
+
+def _by_concept_id(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Index items by concept id, keeping the first of any page-boundary repeats."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        out.setdefault(_concept_id(item), item)
+    return out
+
+
+def _fetch_native_umm(concept_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch one granule's native UMM-G record, or None if CMR no longer has it.
+
+    The concepts endpoint serves the metadata as ASF ingested it, so it returns
+    the records the ``granules.umm_json`` search drops.
+    """
+    response = requests.get(_CONCEPT_URL.format(concept_id), timeout=60)
+    if response.status_code == 404:
+        # Deleted between the atom-JSON walk and this lookup.
+        return None
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "")
+    if "umm+json" not in content_type:
+        raise ValueError(
+            f"{concept_id}: native metadata is {content_type!r}, not UMM-G JSON"
+        )
+    return {"meta": {"concept-id": concept_id}, "umm": response.json()}
+
+
+def recover_umm_items(
+    concept_ids: List[str], max_workers: int = 4
+) -> List[Dict[str, Any]]:
+    """Fetch the UMM-G records of granules a UMM-JSON search left out.
+
+    CMR drops some records from ``granules.umm_json`` results while still
+    counting them in ``CMR-Hits``. Some reappear when asked for by concept id;
+    the rest only come back from the concepts endpoint, one granule per request.
+
+    Parameters
+    ----------
+    concept_ids : list of str
+        Granule concept ids, e.g. ``"G4245361810-ASF"``.
+    max_workers : int
+        Concurrent concepts-endpoint requests (at most 4).
+
+    Returns
+    -------
+    list of dict
+        Items shaped like UMM-JSON search results (``meta`` and ``umm``), in the
+        order of ``concept_ids``. Granules CMR no longer has are left out and
+        counted in a warning.
+
+    """
+    ids = list(dict.fromkeys(concept_ids))
+    found: Dict[str, Dict[str, Any]] = {}
+    for start in range(0, len(ids), _RECOVER_BATCH):
+        batch = ids[start : start + _RECOVER_BATCH]
+        response = requests.post(
+            _UMM_SEARCH_URL,
+            data={"concept_id[]": batch, "page_size": 2 * len(batch)},
+            timeout=120,
+        )
+        response.raise_for_status()
+        found.update(_by_concept_id(_extract_items(response.json())))
+
+    rest = [cid for cid in ids if cid not in found]
+    if rest:
+        logger.info("Fetching %d granules from the CMR concepts endpoint", len(rest))
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 4))) as executor:
+            for cid, item in zip(rest, executor.map(_fetch_native_umm, rest)):
+                if item is not None:
+                    found[cid] = item
+
+    lost = len(ids) - len(found)
+    if lost:
+        logger.warning("%d of %d granules are no longer in CMR", lost, len(ids))
+    return [found[cid] for cid in ids if cid in found]
+
+
+def fetch_umm_granules(
+    params: Dict[str, Any],
+    max_workers: int = 4,
+    rate_limit_delay: float = 0.0,
+) -> List[Dict[str, Any]]:
+    """Fetch the UMM-G record of every granule a CMR search matches.
+
+    ``granules.umm_json`` leaves out records that ``CMR-Hits`` counts (in
+    October 2026, 6,024 of 89,817 NISAR GUNWs), while the atom-JSON
+    ``granules.json`` lists them all. The atom walk therefore supplies the
+    complete set of concept ids, and :func:`recover_umm_items` fetches the
+    records the UMM-JSON walk missed.
+
+    Parameters
+    ----------
+    params : dict
+        CMR granule search parameters, as from ``_build_search_params``.
+    max_workers : int
+        Concurrent CMR page workers.
+    rate_limit_delay : float
+        Delay in seconds between page requests.
+
+    Returns
+    -------
+    list of dict
+        One UMM-JSON item per granule, without page-boundary repeats.
+
+    """
+    items, listed = (
+        _by_concept_id(
+            fetch_cmr_pages(
+                url,
+                params,
+                max_workers=max_workers,
+                rate_limit_delay=rate_limit_delay,
+            )
+        )
+        for url in (_UMM_SEARCH_URL, _JSON_SEARCH_URL)
+    )
+    missing = [cid for cid in listed if cid not in items]
+    if missing:
+        logger.warning(
+            "CMR UMM-JSON left out %d of %d granules; recovering them by concept id",
+            len(missing),
+            len(listed),
+        )
+        items.update(_by_concept_id(recover_umm_items(missing, max_workers)))
+    return list(items.values())
+
+
+def fetch_umm_by_granule_ur(
+    short_name: str, granule_urs: List[str], batch: int = 50
+) -> List[Dict[str, Any]]:
+    """Fetch the UMM-G records of named granules, recovering any CMR drops.
+
+    Names UMM-JSON does not return are looked up in atom-JSON for their concept
+    ids and recovered with :func:`recover_umm_items`. Names CMR does not know
+    are left out.
+
+    Parameters
+    ----------
+    short_name : str
+        CMR collection short name the granules belong to.
+    granule_urs : list of str
+        Granule names (``GranuleUR``).
+    batch : int
+        Names per POST request.
+
+    Returns
+    -------
+    list of dict
+        UMM-JSON items in the order of ``granule_urs``.
+
+    """
+    names = list(dict.fromkeys(granule_urs))
+    found: Dict[str, Dict[str, Any]] = {}
+    missing_ids: List[str] = []
+    for start in range(0, len(names), batch):
+        chunk = names[start : start + batch]
+        data = {"short_name": short_name, "page_size": 2 * len(chunk)}
+        response = requests.post(
+            _UMM_SEARCH_URL, data={**data, "granule_ur[]": chunk}, timeout=120
+        )
+        response.raise_for_status()
+        for item in _extract_items(response.json()):
+            found[item["umm"]["GranuleUR"]] = item
+
+        absent = [name for name in chunk if name not in found]
+        if absent:
+            response = requests.post(
+                _JSON_SEARCH_URL, data={**data, "granule_ur[]": absent}, timeout=120
+            )
+            response.raise_for_status()
+            missing_ids += [_concept_id(e) for e in _extract_items(response.json())]
+
+    if missing_ids:
+        logger.warning(
+            "CMR UMM-JSON left out %d of %d named granules; recovering them",
+            len(missing_ids),
+            len(names),
+        )
+        for item in recover_umm_items(missing_ids):
+            found[item["umm"]["GranuleUR"]] = item
+    return [found[name] for name in names if name in found]
 
 
 def _build_search_params(
@@ -325,11 +525,8 @@ def search_nisar_products(
 
     # Ensure we respect CMR rate limits while using parallel workers
     rate_limit_delay = 0.1 if max_workers > 2 else 0.0
-    items = fetch_cmr_pages(
-        _UMM_SEARCH_URL,
-        params,
-        max_workers=max_workers,
-        rate_limit_delay=rate_limit_delay,
+    items = fetch_umm_granules(
+        params, max_workers=max_workers, rate_limit_delay=rate_limit_delay
     )
 
     # Convert to NISARProduct objects
