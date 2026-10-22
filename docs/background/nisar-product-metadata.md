@@ -9,6 +9,11 @@ Everything below was checked on 2026-10-21 against 20 recent granules of each
 naming convention document JPL D-102255 Rev C (2025-10-19). Fields can change
 with a new composite release, so recheck when the CRID changes.
 
+The datasets inside each product file, with their shapes, types, units and
+descriptions, are listed per product: [RSLC](../products/rslc.md),
+[GSLC](../products/gslc.md), [GUNW](../products/gunw.md) and
+[GOFF](../products/goff.md).
+
 ## Collections
 
 | Product | What it is | CMR short name | CMR concept id | CMR-STAC collection | Granules (2026-10-21) |
