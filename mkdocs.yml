@@ -46,6 +46,7 @@ nav:
       - Processing modes: background/processing-modes.md
       - CMR UMM-JSON drops: background/cmr-umm-json-drops.md
       - NISAR product metadata: background/nisar-product-metadata.md
+      - Metadata for the viewer: background/viewer-metadata-candidates.md
   - Product layouts:
       - RSLC: products/rslc.md
       - GSLC: products/gslc.md

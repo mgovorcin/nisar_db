@@ -266,3 +266,5 @@ returns them all was not tested.
 
 [Viewer data sources](../data-sources.md) lists each flag and metric with its
 exact path.
+[Metadata for the viewer](viewer-metadata-candidates.md) lists what could
+be added next.
